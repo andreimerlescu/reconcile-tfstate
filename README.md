@@ -12,6 +12,8 @@ variables, set to `github.com/andreimerlescu/*`, but only when installing privat
 set all the time. Just copy the single line. It's the easiest.
 
 ```bash
+GONOSUMDB="github.com/andreimerlescu/*" \
+GONOPROXY="github.com/andreimerlescu/*" \
 GOPRIVATE="github.com/andreimerlescu/*" \
 go install github.com/andreimerlescu/reconcile-tfstate@latest
 ```
