@@ -1,12 +1,32 @@
 package main
 
 import (
+	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 
 	gover "github.com/hashicorp/go-version"
 )
+
+//go:embed VERSION
+var versionBytes embed.FS
+
+var currentVersion string
+
+func Version() string {
+	if len(currentVersion) == 0 {
+		versionBytes, err := versionBytes.ReadFile("VERSION")
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			return "v0.0.0"
+		}
+		currentVersion = strings.TrimSpace(string(versionBytes))
+	}
+	return currentVersion
+}
 
 // sniffJSONStateVersion parses []byte from the state file and returns the version as a uint64 or an error
 func sniffJSONStateVersion(src []byte) (uint64, error) {

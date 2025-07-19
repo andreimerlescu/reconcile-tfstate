@@ -29,7 +29,13 @@ func main() {
 	awsRegion := flag.String("region", "us-west-2", "AWS Region to check resources against")
 	concurrency := flag.Int("concurrency", 10, "Number of concurrent AWS API calls")
 	s3State := flag.String("s3-state", "", "Optional: S3 URI of the state file (e.g., s3://bucket/key). If provided, state will be downloaded/uploaded.")
+	showVersion := flag.Bool("v", false, "Show version")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(Version())
+		os.Exit(0)
+	}
 
 	if *stateFilePath == "" && *s3State == "" {
 		log.Fatal("State file path (--state) or S3 state path (--s3-state) is required.")
