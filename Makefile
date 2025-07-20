@@ -25,9 +25,9 @@ summary:
 
 install: $(BIN_DIR)
 	@if [[ "$(shell go env GOOS)" == "windows" ]]; then \
-		cp $(BIN_DIR)/$(APP_NAME)-$(shell go env GOOS)-$(shell go env GOARCH).exe "$(shell go env GOBIN)/$(APP_NAME).exe"; \
+		cp "$(BIN_DIR)/$(APP_NAME)-$(shell go env GOOS)-$(shell go env GOARCH).exe" "$(shell go env GOBIN)/$(APP_NAME).exe"; \
 	else \
-		cp $(BIN_DIR)/$(APP_NAME)-$(shell go env GOOS)-$(shell go env GOARCH) "$(shell go env GOBIN)/$(APP_NAME)"; \
+		cp "$(BIN_DIR)/$(APP_NAME)-$(shell go env GOOS)-$(shell go env GOARCH)" "$(shell go env GOBIN)/$(APP_NAME)"; \
 	fi
 	@echo "NEW: $(shell which $(APP_NAME))"
 
