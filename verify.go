@@ -1,4 +1,3 @@
-// verify.go (updated to implement verifySecurityGroupRule directly using SecurityGroupRuleIds)
 package main
 
 import (

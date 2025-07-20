@@ -211,11 +211,9 @@ func processResourceInstance(ctx context.Context, clients *AWSClient, resource R
 		status.Message = fmt.Sprintf("Data/Local resource '%s'. No external verification needed.", tfAddress)
 		return status
 	case "aws_security_group_rule":
-		// Now we have 'security_group_rule_id' in the state, let's use it for a direct check
 		if sgRuleAWSID, ok := attributes["security_group_rule_id"].(string); ok && sgRuleAWSID != "" {
 			liveID, exists, err = clients.verifySecurityGroupRule(ctx, sgRuleAWSID)
 		} else {
-			// Fallback if 'security_group_rule_id' is not present, or use the general WARNING
 			status.Category = "WARNING"
 			status.Message = fmt.Sprintf("Resource type '%s' (ID: %s) verification is complex and 'security_group_rule_id' not found in state attributes. Manual verification recommended.", resource.Type, stateID)
 			return status
@@ -254,7 +252,33 @@ func processResourceInstance(ctx context.Context, clients *AWSClient, resource R
 			err = fmt.Errorf("could not find 'name' attribute for aws_ecs_cluster")
 		}
 	case "aws_region":
-		err = nil // Handled as INFO / configuration, not a physical resource to verify
+		// Special handling for aws_region data source:
+		// It's not a real resource that can be "found" or "not found" in AWS by ID.
+		// Its "id" in state is just the region name (e.g., "us-east-1").
+		// If the state's region matches the current execution region, it's OK.
+		// If not, it's a region mismatch, as it implies a state artifact from another region.
+		regionInState, ok := attributes["name"].(string) // Use "name" attribute for data.aws_region
+		if !ok || regionInState == "" {
+			// If region name attribute is missing/empty, it's an error in state format.
+			status.Category = "ERROR"
+			status.Message = fmt.Sprintf("Data source '%s' has no valid 'name' attribute for region.", tfAddress)
+			return status
+		}
+		if regionInState == currentFlagRegion {
+			status.Category = "OK"
+			status.Message = fmt.Sprintf("%s (ID: %s) resolves to current region and is in state.", tfAddress, regionInState)
+			status.LiveID = regionInState // Set LiveID to show what it resolved to
+			status.ExistsInAWS = true
+			return status
+		} else {
+			// If the region in state doesn't match the currently checked region
+			// then it's a mismatch, not "dangerous" in the sense of a missing resource.
+			regionMismatchCount.Add(1)
+			status.Category = "REGION_MISMATCH"
+			status.Message = fmt.Sprintf("%s (state file claims region '%s') does not match current region '%s'. Suggest `terraform state rm %s` if resource moved or is irrelevant.", tfAddress, regionInState, currentFlagRegion, tfAddress)
+			status.Command = fmt.Sprintf("terraform state rm %s", tfAddress)
+			return status
+		}
 	case "aws_ssm_parameter":
 		if paramName, ok := attributes["name"].(string); ok && paramName != "" {
 			liveID, exists, err = clients.verifySSMParameter(ctx, paramName)
@@ -339,10 +363,12 @@ func processResourceInstance(ctx context.Context, clients *AWSClient, resource R
 		status.Category = "ERROR"
 		status.Message = fmt.Sprintf("Failed to verify %s: %v", tfAddress, err)
 	} else if exists {
-		if stateID == liveID && stateID != "" {
+		if stateID == liveID || stateID == "" { // If stateID is empty, it's usually an OK data source where ID isn't critical.
 			status.Category = "OK"
 			status.Message = fmt.Sprintf("%s (ID: %s) exists in state and AWS.", tfAddress, liveID)
 		} else {
+			// This case is for resources that exist, but the stateID != liveID.
+			// This often happens if the resource was manually modified or re-created outside of Terraform.
 			status.Category = "POTENTIAL_IMPORT"
 			status.Message = fmt.Sprintf("%s exists in AWS with ID '%s'. State ID: '%s'.", tfAddress, liveID, stateID)
 			status.Command = fmt.Sprintf("terraform import %s %s", tfAddress, liveID)
