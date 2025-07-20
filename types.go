@@ -110,4 +110,28 @@ type (
 		Resources        []ResourceStateV4        `json:"resources"`
 		CheckResults     []CheckResultsV4         `json:"check_results"`
 	}
+
+	// categorizedResults holds slices of ResourceStatus for each category.
+	categorizedResults struct {
+		InfoResults            []ResourceStatus
+		OkResults              []ResourceStatus
+		WarningResults         []ResourceStatus
+		ErrorResults           []ResourceStatus
+		PotentialImportResults []ResourceStatus
+		DangerousResults       []ResourceStatus
+		RegionMismatchResults  []ResourceStatus
+		RunCommands            []string
+	}
+
+	// Config holds the application's runtime configuration.
+	Config struct {
+		StateFilePath string
+		AWSRegion     string
+		Concurrency   int
+		S3State       string
+		ShowVersion   bool
+		IsS3State     bool
+		S3Bucket      string
+		S3Key         string
+	}
 )

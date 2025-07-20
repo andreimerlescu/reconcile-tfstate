@@ -5,8 +5,65 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 )
+
+// processResources concurrently processes each resource instance in the Terraform state file
+// and returns categorized results.
+func processResources(ctx context.Context, awsClients *AWSClient, tfState *TFStateFile, awsRegion string, concurrency int) *categorizedResults {
+	resultsChan := make(chan ResourceStatus, concurrency)
+	var wg sync.WaitGroup
+	var regionMismatchErrors atomic.Int64
+
+	if len(tfState.Resources) > 0 {
+		for _, resource := range tfState.Resources {
+			for _, instance := range resource.Instances {
+				wg.Add(1)
+				go func(res ResourceStateV4, inst InstanceObjectStateV4) {
+					defer wg.Done()
+					status := processResourceInstance(ctx, awsClients, res, inst, awsRegion, &regionMismatchErrors)
+					resultsChan <- status
+				}(resource, instance)
+			}
+		}
+	}
+
+	go func() {
+		wg.Wait()
+		close(resultsChan)
+	}()
+
+	results := &categorizedResults{}
+	for status := range resultsChan {
+		switch status.Category {
+		case "INFO":
+			results.InfoResults = append(results.InfoResults, status)
+		case "OK":
+			results.OkResults = append(results.OkResults, status)
+		case "WARNING":
+			results.WarningResults = append(results.WarningResults, status)
+		case "ERROR":
+			results.ErrorResults = append(results.ErrorResults, status)
+		case "POTENTIAL_IMPORT":
+			results.PotentialImportResults = append(results.PotentialImportResults, status)
+			if status.Command != "" {
+				results.RunCommands = append(results.RunCommands, status.Command)
+			}
+		case "DANGEROUS":
+			results.DangerousResults = append(results.DangerousResults, status)
+			if status.Command != "" {
+				results.RunCommands = append(results.RunCommands, status.Command)
+			}
+		case "REGION_MISMATCH":
+			results.RegionMismatchResults = append(results.RegionMismatchResults, status)
+			if status.Command != "" {
+				results.RunCommands = append(results.RunCommands, status.Command)
+			}
+		}
+	}
+	return results
+}
 
 // processResourceInstance checks a single Terraform resource instance against AWS
 // It now accepts the ResourceStateV4 and InstanceObjectStateV4 from the copied types.
