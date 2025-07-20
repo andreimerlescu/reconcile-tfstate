@@ -1,6 +1,6 @@
 module github.com/andreimerlescu/reconcile-tfstate
 
-go 1.24
+go 1.24.5
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.36.5

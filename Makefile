@@ -24,7 +24,11 @@ summary:
 	@summarize -i "go,Makefile,mod"
 
 install: $(BIN_DIR)
-	@cp $(BIN_DIR)/$(APP_NAME)-$(shell go env GOOS)-$(shell go env GOARCH) ${GOBIN}/${APP_NAME}
+	@if [[ "$(shell go env GOOS)" == "windows" ]]; then \
+		cp $(BIN_DIR)/$(APP_NAME)-$(shell go env GOOS)-$(shell go env GOARCH).exe "$(shell go env GOBIN)/$(APP_NAME).exe"; \
+	else \
+		cp $(BIN_DIR)/$(APP_NAME)-$(shell go env GOOS)-$(shell go env GOARCH) "$(shell go env GOBIN)/$(APP_NAME)"; \
+	fi
 	@echo "NEW: $(shell which $(APP_NAME))"
 
 # Build for macOS Intel (amd64)
