@@ -16,18 +16,10 @@ func printReportHeader(stateFilePath string, tfState *TFStateFile, awsRegion str
 
 // sortResults sorts the collected ResourceStatus slices by TerraformAddress.
 func sortResults(results *categorizedResults) {
-	sort.Slice(results.InfoResults, func(i, j int) bool {
-		return results.InfoResults[i].TerraformAddress < results.InfoResults[j].TerraformAddress
-	})
-	sort.Slice(results.OkResults, func(i, j int) bool {
-		return results.OkResults[i].TerraformAddress < results.OkResults[j].TerraformAddress
-	})
-	sort.Slice(results.WarningResults, func(i, j int) bool {
-		return results.WarningResults[i].TerraformAddress < results.WarningResults[j].TerraformAddress
-	})
-	sort.Slice(results.ErrorResults, func(i, j int) bool {
-		return results.ErrorResults[i].TerraformAddress < results.ErrorResults[j].TerraformAddress
-	})
+	sort.Slice(results.InfoResults, func(i, j int) bool { return results.InfoResults[i].TerraformAddress < results.InfoResults[j].TerraformAddress })
+	sort.Slice(results.OkResults, func(i, j int) bool { return results.OkResults[i].TerraformAddress < results.OkResults[j].TerraformAddress })
+	sort.Slice(results.WarningResults, func(i, j int) bool { return results.WarningResults[i].TerraformAddress < results.WarningResults[j].TerraformAddress })
+	sort.Slice(results.ErrorResults, func(i, j int) bool { return results.ErrorResults[i].TerraformAddress < results.ErrorResults[j].TerraformAddress })
 	sort.Slice(results.PotentialImportResults, func(i, j int) bool {
 		return results.PotentialImportResults[i].TerraformAddress < results.PotentialImportResults[j].TerraformAddress
 	})

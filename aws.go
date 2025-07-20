@@ -7,11 +7,15 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
+	"github.com/aws/aws-sdk-go-v2/service/acm"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/ecs"
 	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
 	"github.com/aws/aws-sdk-go-v2/service/route53"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	"github.com/aws/aws-sdk-go-v2/service/ssm"
 )
 
 // NewAWSClient initializes and returns AWS service clients
@@ -28,6 +32,10 @@ func NewAWSClient(ctx context.Context, region string) (*AWSClient, error) {
 		Route53Client:        route53.NewFromConfig(cfg),
 		ELBV2Client:          elasticloadbalancingv2.NewFromConfig(cfg),
 		S3Downloader:         manager.NewDownloader(s3.NewFromConfig(cfg)),
+		ACMClient:            acm.NewFromConfig(cfg),
+		SSMClient:            ssm.NewFromConfig(cfg),
+		SecretsManagerClient: secretsmanager.NewFromConfig(cfg),
+		ECSClient:            ecs.NewFromConfig(cfg),
 	}, nil
 }
 

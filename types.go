@@ -4,11 +4,15 @@ import (
 	"encoding/json"
 
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
+	"github.com/aws/aws-sdk-go-v2/service/acm"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/ecs"
 	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
 	"github.com/aws/aws-sdk-go-v2/service/route53"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	"github.com/aws/aws-sdk-go-v2/service/ssm"
 )
 
 type (
@@ -32,6 +36,11 @@ type (
 		Route53Client        *route53.Client
 		ELBV2Client          *elasticloadbalancingv2.Client
 		S3Downloader         *manager.Downloader
+		// Add new clients
+		ACMClient            *acm.Client
+		SSMClient            *ssm.Client
+		SecretsManagerClient *secretsmanager.Client
+		ECSClient            *ecs.Client
 	}
 
 	// TFStateFile represents the contents of a Terraform state file.
