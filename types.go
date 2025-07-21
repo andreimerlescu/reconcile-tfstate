@@ -5,10 +5,15 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/acm"
+	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
+	"github.com/aws/aws-sdk-go-v2/service/cloudfront"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
 	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
 	"github.com/aws/aws-sdk-go-v2/service/route53"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
@@ -16,6 +21,20 @@ import (
 )
 
 type (
+	// Config holds the application's runtime configuration.
+	Config struct {
+		StateFilePath   string
+		AWSRegion       string
+		Concurrency     int
+		S3State         string
+		ShowVersion     bool
+		IsS3State       bool
+		S3Bucket        string
+		S3Key           string
+		ExecuteCommands bool
+		BackupsDir      string
+	}
+
 	// ResourceStatus represents the status of a resource after checking AWS
 	ResourceStatus struct {
 		TerraformAddress string
@@ -36,11 +55,15 @@ type (
 		Route53Client        *route53.Client
 		ELBV2Client          *elasticloadbalancingv2.Client
 		S3Downloader         *manager.Downloader
-		// Add new clients
 		ACMClient            *acm.Client
 		SSMClient            *ssm.Client
 		SecretsManagerClient *secretsmanager.Client
 		ECSClient            *ecs.Client
+		AutoscalingClient    *autoscaling.Client
+		CloudWatchClient     *cloudwatch.Client
+		IAMClient            *iam.Client
+		LambdaClient         *lambda.Client
+		CloudFrontClient     *cloudfront.Client
 	}
 
 	// TFStateFile represents the contents of a Terraform state file.
@@ -130,17 +153,5 @@ type (
 		DangerousResults       []ResourceStatus
 		RegionMismatchResults  []ResourceStatus
 		RunCommands            []string
-	}
-
-	// Config holds the application's runtime configuration.
-	Config struct {
-		StateFilePath string
-		AWSRegion     string
-		Concurrency   int
-		S3State       string
-		ShowVersion   bool
-		IsS3State     bool
-		S3Bucket      string
-		S3Key         string
 	}
 )

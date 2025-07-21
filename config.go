@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"path/filepath"
 	"strings"
 )
 
@@ -14,6 +15,9 @@ func parseAndValidateConfig() Config {
 	concurrency := flag.Int("concurrency", 10, "Number of concurrent AWS API calls")
 	s3State := flag.String("s3-state", "", "Optional: S3 URI of the state file (e.g., s3://bucket/key). If provided, state will be downloaded/uploaded.")
 	showVersion := flag.Bool("v", false, "Show version")
+	shouldExecute := flag.Bool("should-execute", false, "If true, automatically execute the suggested 'terraform import' and 'terraform state rm' commands.") // New flag
+	backupsDir := flag.String("backups-dir", filepath.Join(".", "backups"), "Directory to store local backups and reports.")
+
 	flag.Parse()
 
 	if *showVersion {
@@ -31,10 +35,12 @@ func parseAndValidateConfig() Config {
 	}
 
 	config := Config{
-		StateFilePath: *stateFilePath,
-		AWSRegion:     *awsRegion,
-		Concurrency:   *concurrency,
-		S3State:       *s3State,
+		StateFilePath:   *stateFilePath,
+		AWSRegion:       *awsRegion,
+		Concurrency:     *concurrency,
+		S3State:         *s3State,
+		ExecuteCommands: *shouldExecute,
+		BackupsDir:      *backupsDir,
 	}
 
 	if *s3State != "" {

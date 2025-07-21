@@ -118,6 +118,26 @@ func processResourceInstance(ctx context.Context, clients *AWSClient, resource R
 		arnInState = val
 	} else if val, ok := attributes["certificate_arn"].(string); ok { // For ACM certificates
 		arnInState = val
+	} else if val, ok := attributes["instance_profile_arn"].(string); ok { // For IAM Instance Profile
+		arnInState = val
+	} else if val, ok := attributes["role_arn"].(string); ok { // For IAM Role
+		arnInState = val
+	} else if val, ok := attributes["function_arn"].(string); ok { // For Lambda Function
+		arnInState = val
+	} else if val, ok := attributes["distribution_arn"].(string); ok { // For CloudFront Distribution
+		arnInState = val
+	} else if val, ok := attributes["autoscaling_group_arn"].(string); ok { // For Auto Scaling Group
+		arnInState = val
+	} else if val, ok := attributes["policy_arn"].(string); ok { // For Auto Scaling Policy
+		arnInState = val
+	} else if val, ok := attributes["alarm_arn"].(string); ok { // For CloudWatch Metric Alarm
+		arnInState = val
+	} else if val, ok := attributes["bucket_arn"].(string); ok { // For S3 Bucket Policy
+		arnInState = val
+	} else if val, ok := attributes["service_arn"].(string); ok { // For ECS Service
+		arnInState = val
+	} else if val, ok := attributes["task_definition_arn"].(string); ok { // For ECS Task Definition
+		arnInState = val
 	}
 
 	// --- REGION MISMATCH PRE-CHECK: Centralized Logic ---
@@ -246,28 +266,48 @@ func processResourceInstance(ctx context.Context, clients *AWSClient, resource R
 			err = fmt.Errorf("could not find 'id' attribute for aws_ami")
 		}
 	case "aws_ecs_cluster":
-		if clusterName, ok := attributes["name"].(string); ok && clusterName != "" {
-			liveID, exists, err = clients.verifyECSCluster(ctx, clusterName)
-		} else {
-			err = fmt.Errorf("could not find 'name' attribute for aws_ecs_cluster")
+		var clusterName string
+		val, ok := attributes["name"]
+		if !ok || val == nil {
+			// If 'name' is not found, check 'cluster_name' (common for data sources)
+			val, ok = attributes["cluster_name"]
+			if !ok || val == nil {
+				return ResourceStatus{
+					TerraformAddress: tfAddress,
+					Error:            fmt.Errorf("neither 'name' nor 'cluster_name' attribute found or are null for aws_ecs_cluster. Raw values: name=%v, cluster_name=%v", attributes["name"], attributes["cluster_name"]),
+					Category:         "ERROR",
+					Message:          fmt.Sprintf("Failed to retrieve valid name/cluster_name attribute for %s. Inspect state file.", tfAddress),
+				}
+			}
 		}
+		clusterName = fmt.Sprintf("%v", val) // Robustly convert to string
+		if clusterName == "" {
+			return ResourceStatus{
+				TerraformAddress: tfAddress,
+				Error:            fmt.Errorf("attribute for aws_ecs_cluster converted to an empty string. Raw value: %v", val),
+				Category:         "ERROR",
+				Message:          fmt.Sprintf("Failed to retrieve valid name/cluster_name attribute for %s. Inspect state file.", tfAddress),
+			}
+		}
+		liveID, exists, err = clients.verifyECSCluster(ctx, clusterName)
 	case "aws_region":
-		// Special handling for aws_region data source:
-		// It's not a real resource that can be "found" or "not found" in AWS by ID.
-		// Its "id" in state is just the region name (e.g., "us-east-1").
-		// If the state's region matches the current execution region, it's OK.
-		// If not, it's a region mismatch, as it implies a state artifact from another region.
-		regionInState, ok := attributes["name"].(string) // Use "name" attribute for data.aws_region
-		if !ok || regionInState == "" {
-			// If region name attribute is missing/empty, it's an error in state format.
+		val, ok := attributes["name"]
+		if !ok || val == nil {
 			status.Category = "ERROR"
-			status.Message = fmt.Sprintf("Data source '%s' has no valid 'name' attribute for region.", tfAddress)
+			status.Message = fmt.Sprintf("Data source '%s' has no valid 'name' attribute for region. Raw value: %v", tfAddress, attributes["name"])
 			return status
 		}
+		regionInState := fmt.Sprintf("%v", val)
+		if regionInState == "" {
+			status.Category = "ERROR"
+			status.Message = fmt.Sprintf("Data source '%s' 'name' attribute converted to an empty string. Raw value: %v", tfAddress, val)
+			return status
+		}
+
 		if regionInState == currentFlagRegion {
 			status.Category = "OK"
 			status.Message = fmt.Sprintf("%s (ID: %s) resolves to current region and is in state.", tfAddress, regionInState)
-			status.LiveID = regionInState // Set LiveID to show what it resolved to
+			status.LiveID = regionInState
 			status.ExistsInAWS = true
 			return status
 		} else {
@@ -349,6 +389,207 @@ func processResourceInstance(ctx context.Context, clients *AWSClient, resource R
 		} else {
 			err = fmt.Errorf("could not find 'id' attribute for aws_vpc")
 		}
+	case "aws_instance":
+		if instanceID, ok := attributes["id"].(string); ok && instanceID != "" {
+			liveID, exists, err = clients.verifyInstance(ctx, instanceID)
+		} else {
+			err = fmt.Errorf("could not find 'id' attribute for aws_instance")
+		}
+	case "aws_launch_template":
+		templateID, _ := attributes["id"].(string)
+		templateName, _ := attributes["name"].(string)
+		if templateID != "" || templateName != "" {
+			liveID, exists, err = clients.verifyLaunchTemplate(ctx, templateID, templateName)
+		} else {
+			err = fmt.Errorf("could not find 'id' or 'name' attribute for aws_launch_template")
+		}
+	case "aws_autoscaling_group":
+		if asgName, ok := attributes["name"].(string); ok && asgName != "" {
+			liveID, exists, err = clients.verifyAutoscalingGroup(ctx, asgName)
+		} else {
+			err = fmt.Errorf("could not find 'name' attribute for aws_autoscaling_group")
+		}
+	case "aws_autoscaling_policy":
+		policyARN, _ := attributes["arn"].(string)
+		policyName, _ := attributes["name"].(string)
+		asgName, _ := attributes["autoscaling_group_name"].(string)
+		if policyARN != "" || (policyName != "" && asgName != "") {
+			liveID, exists, err = clients.verifyAutoscalingPolicy(ctx, policyARN, policyName, asgName)
+		} else {
+			err = fmt.Errorf("could not find 'arn' or ('name' and 'autoscaling_group_name') attributes for aws_autoscaling_policy")
+		}
+	case "aws_cloudwatch_metric_alarm":
+		if alarmName, ok := attributes["alarm_name"].(string); ok && alarmName != "" {
+			liveID, exists, err = clients.verifyCloudWatchMetricAlarm(ctx, alarmName)
+		} else {
+			err = fmt.Errorf("could not find 'alarm_name' attribute for aws_cloudwatch_metric_alarm")
+		}
+	case "aws_iam_instance_profile":
+		if profileName, ok := attributes["name"].(string); ok && profileName != "" {
+			liveID, exists, err = clients.verifyIAMInstanceProfile(ctx, profileName)
+		} else {
+			err = fmt.Errorf("could not find 'name' attribute for aws_iam_instance_profile")
+		}
+	case "aws_iam_role":
+		if roleName, ok := attributes["name"].(string); ok && roleName != "" {
+			liveID, exists, err = clients.verifyIAMRole(ctx, roleName)
+		} else {
+			err = fmt.Errorf("could not find 'name' attribute for aws_iam_role")
+		}
+	case "aws_iam_role_policy":
+		roleName, _ := attributes["role"].(string)
+		policyName, _ := attributes["name"].(string)
+		if roleName != "" && policyName != "" {
+			liveID, exists, err = clients.verifyIAMRolePolicy(ctx, roleName, policyName)
+		} else {
+			err = fmt.Errorf("could not find 'role' or 'name' attributes for aws_iam_role_policy")
+		}
+	case "aws_lambda_function":
+		if functionName, ok := attributes["function_name"].(string); ok && functionName != "" {
+			liveID, exists, err = clients.verifyLambdaFunction(ctx, functionName)
+		} else {
+			err = fmt.Errorf("could not find 'function_name' attribute for aws_lambda_function")
+		}
+	case "aws_lambda_permission":
+		functionName, _ := attributes["function_name"].(string)
+		statementID, _ := attributes["statement_id"].(string)
+		if functionName != "" && statementID != "" {
+			liveID, exists, err = clients.verifyLambdaPermission(ctx, functionName, statementID)
+		} else {
+			err = fmt.Errorf("could not find 'function_name' or 'statement_id' attributes for aws_lambda_permission")
+		}
+	case "aws_cloudfront_distribution":
+		if distributionID, ok := attributes["id"].(string); ok && distributionID != "" {
+			liveID, exists, err = clients.verifyCloudFrontDistribution(ctx, distributionID)
+		} else {
+			err = fmt.Errorf("could not find 'id' attribute for aws_cloudfront_distribution")
+		}
+	case "aws_cloudfront_origin_access_identity":
+		if oaiID, ok := attributes["id"].(string); ok && oaiID != "" {
+			liveID, exists, err = clients.verifyCloudFrontOriginAccessIdentity(ctx, oaiID)
+		} else {
+			err = fmt.Errorf("could not find 'id' attribute for aws_cloudfront_origin_access_identity")
+		}
+	case "aws_s3_bucket_policy":
+		if bucketName, ok := attributes["bucket"].(string); ok && bucketName != "" {
+			liveID, exists, err = clients.verifyS3BucketPolicy(ctx, bucketName)
+		} else {
+			err = fmt.Errorf("could not find 'bucket' attribute for aws_s3_bucket_policy")
+		}
+	case "aws_s3_bucket_acl":
+		if bucketName, ok := attributes["bucket"].(string); ok && bucketName != "" {
+			liveID, exists, err = clients.verifyS3BucketACL(ctx, bucketName)
+		} else {
+			err = fmt.Errorf("could not find 'bucket' attribute for aws_s3_bucket_acl")
+		}
+	case "aws_s3_bucket_ownership_controls":
+		if bucketName, ok := attributes["bucket"].(string); ok && bucketName != "" {
+			liveID, exists, err = clients.verifyS3BucketOwnershipControls(ctx, bucketName)
+		} else {
+			err = fmt.Errorf("could not find 'bucket' attribute for aws_s3_bucket_ownership_controls")
+		}
+	case "aws_s3_bucket_public_access_block":
+		if bucketName, ok := attributes["bucket"].(string); ok && bucketName != "" {
+			liveID, exists, err = clients.verifyS3BucketPublicAccessBlock(ctx, bucketName)
+		} else {
+			err = fmt.Errorf("could not find 'bucket' attribute for aws_s3_bucket_public_access_block")
+		}
+	case "aws_s3_bucket_website_configuration":
+		if bucketName, ok := attributes["bucket"].(string); ok && bucketName != "" {
+			liveID, exists, err = clients.verifyS3BucketWebsiteConfiguration(ctx, bucketName)
+		} else {
+			err = fmt.Errorf("could not find 'bucket' attribute for aws_s3_bucket_website_configuration")
+		}
+	case "aws_s3_bucket_cors_configuration":
+		if bucketName, ok := attributes["bucket"].(string); ok && bucketName != "" {
+			liveID, exists, err = clients.verifyS3BucketCORSConfiguration(ctx, bucketName)
+		} else {
+			err = fmt.Errorf("could not find 'bucket' attribute for aws_s3_bucket_cors_configuration")
+		}
+	case "aws_s3_bucket_notification":
+		if bucketName, ok := attributes["bucket"].(string); ok && bucketName != "" {
+			liveID, exists, err = clients.verifyS3BucketNotification(ctx, bucketName)
+		} else {
+			err = fmt.Errorf("could not find 'bucket' attribute for aws_s3_bucket_notification")
+		}
+	case "aws_s3_object":
+		bucketName, _ := attributes["bucket"].(string)
+		key, _ := attributes["key"].(string)
+		if bucketName != "" && key != "" {
+			liveID, exists, err = clients.verifyS3Object(ctx, bucketName, key)
+		} else {
+			err = fmt.Errorf("could not find 'bucket' or 'key' attributes for aws_s3_object")
+		}
+	case "aws_ecs_service":
+		// Get "cluster" attribute and convert robustly
+		valCluster, okCluster := attributes["cluster"] // Corrected key to "cluster"
+		if !okCluster || valCluster == nil {
+			return ResourceStatus{
+				TerraformAddress: tfAddress,
+				Error:            fmt.Errorf("attribute 'cluster' for aws_ecs_service is missing or null. Raw value: %v", attributes["cluster"]),
+				Category:         "ERROR",
+				Message:          fmt.Sprintf("Failed to retrieve valid 'cluster' attribute for %s. Inspect state file.", tfAddress),
+			}
+		}
+		clusterName := fmt.Sprintf("%v", valCluster) // Robustly convert to string
+		if clusterName == "" {
+			return ResourceStatus{
+				TerraformAddress: tfAddress,
+				Error:            fmt.Errorf("attribute 'cluster' for aws_ecs_service converted to an empty string. Raw value: %v", valCluster),
+				Category:         "ERROR",
+				Message:          fmt.Sprintf("Failed to retrieve valid 'cluster' attribute for %s. Inspect state file.", tfAddress),
+			}
+		}
+
+		// Get "name" attribute and convert robustly
+		valService, okService := attributes["name"]
+		if !okService || valService == nil {
+			return ResourceStatus{
+				TerraformAddress: tfAddress,
+				Error:            fmt.Errorf("attribute 'name' for aws_ecs_service is missing or null. Raw value: %v", attributes["name"]),
+				Category:         "ERROR",
+				Message:          fmt.Sprintf("Failed to retrieve valid 'name' attribute for %s. Inspect state file.", tfAddress),
+			}
+		}
+		serviceName := fmt.Sprintf("%v", valService) // Robustly convert to string
+		if serviceName == "" {
+			return ResourceStatus{
+				TerraformAddress: tfAddress,
+				Error:            fmt.Errorf("attribute 'name' for aws_ecs_service converted to an empty string. Raw value: %v", valService),
+				Category:         "ERROR",
+				Message:          fmt.Sprintf("Failed to retrieve valid 'name' attribute for %s. Inspect state file.", tfAddress),
+			}
+		}
+		liveID, exists, err = clients.verifyECSService(ctx, clusterName, serviceName)
+	case "aws_ecs_task_definition":
+		val, ok := attributes["arn"]
+		if !ok || val == nil { // Attribute not found or is null
+			return ResourceStatus{
+				TerraformAddress: tfAddress,
+				Error:            fmt.Errorf("attribute 'arn' for aws_ecs_task_definition is missing or null. Raw value: %v", attributes["arn"]),
+				Category:         "ERROR",
+				Message:          fmt.Sprintf("Failed to retrieve valid 'arn' attribute for %s. Inspect state file.", tfAddress),
+			}
+		}
+		taskDefinitionARN := fmt.Sprintf("%v", val) // Robustly convert to string
+		if taskDefinitionARN == "" {                // Check if the string representation is empty
+			return ResourceStatus{
+				TerraformAddress: tfAddress,
+				Error:            fmt.Errorf("attribute 'arn' for aws_ecs_task_definition converted to an empty string. Raw value: %v", val),
+				Category:         "ERROR",
+				Message:          fmt.Sprintf("Failed to retrieve valid 'arn' attribute for %s. Inspect state file.", tfAddress),
+			}
+		}
+		liveID, exists, err = clients.verifyECSTaskDefinition(ctx, taskDefinitionARN)
+	case "aws_lb_listener_certificate":
+		listenerARN, _ := attributes["listener_arn"].(string)
+		certificateARN, _ := attributes["certificate_arn"].(string)
+		if listenerARN != "" && certificateARN != "" {
+			liveID, exists, err = clients.verifyLBListenerCertificate(ctx, listenerARN, certificateARN)
+		} else {
+			err = fmt.Errorf("could not find 'listener_arn' or 'certificate_arn' attributes for aws_lb_listener_certificate")
+		}
+
 	default:
 		status.Category = "WARNING"
 		status.Message = fmt.Sprintf("Resource type '%s' not supported by this checker. Manual verification needed.", resource.Type)
@@ -363,12 +604,10 @@ func processResourceInstance(ctx context.Context, clients *AWSClient, resource R
 		status.Category = "ERROR"
 		status.Message = fmt.Sprintf("Failed to verify %s: %v", tfAddress, err)
 	} else if exists {
-		if stateID == liveID || stateID == "" { // If stateID is empty, it's usually an OK data source where ID isn't critical.
+		if stateID == liveID || stateID == "" {
 			status.Category = "OK"
 			status.Message = fmt.Sprintf("%s (ID: %s) exists in state and AWS.", tfAddress, liveID)
 		} else {
-			// This case is for resources that exist, but the stateID != liveID.
-			// This often happens if the resource was manually modified or re-created outside of Terraform.
 			status.Category = "POTENTIAL_IMPORT"
 			status.Message = fmt.Sprintf("%s exists in AWS with ID '%s'. State ID: '%s'.", tfAddress, liveID, stateID)
 			status.Command = fmt.Sprintf("terraform import %s %s", tfAddress, liveID)

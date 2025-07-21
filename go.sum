@@ -20,6 +20,12 @@ github.com/aws/aws-sdk-go-v2/internal/v4a v1.3.36 h1:GMYy2EOWfzdP3wfVAGXBNKY5vK4
 github.com/aws/aws-sdk-go-v2/internal/v4a v1.3.36/go.mod h1:gDhdAV6wL3PmPqBhiPbnlS447GoWs8HTTOYef9/9Inw=
 github.com/aws/aws-sdk-go-v2/service/acm v1.33.1 h1:VAAadBIWgoYoS0tRWkghu1E2LfSsKQw8m/sOkdF1D3E=
 github.com/aws/aws-sdk-go-v2/service/acm v1.33.1/go.mod h1:eq3JsAPGHsNfhRbPoVRUVDxtQFynlnFcDXzxFMEeOdQ=
+github.com/aws/aws-sdk-go-v2/service/autoscaling v1.54.1 h1:DsCwHidm3y19FV7h/UEylDDxiv+PFoztdMTToYkdMn8=
+github.com/aws/aws-sdk-go-v2/service/autoscaling v1.54.1/go.mod h1:MYX+s3uV5xD2kg17cZQtohCkMHzb4EbJk+yaE2cncH0=
+github.com/aws/aws-sdk-go-v2/service/cloudfront v1.46.5 h1:F2Qnu3ndjkR9pVn478MuC5b9yQGm3rtSJhoXO6gA+Uk=
+github.com/aws/aws-sdk-go-v2/service/cloudfront v1.46.5/go.mod h1:0zgTNyuzL2+HfnkP+w8Z+eKtKu7KbOTWuywJYdjkWfY=
+github.com/aws/aws-sdk-go-v2/service/cloudwatch v1.45.4 h1:0uWgUHILgrSF/Gx9Of+Sx6r97A1L9tx0ghTsdhxwcN8=
+github.com/aws/aws-sdk-go-v2/service/cloudwatch v1.45.4/go.mod h1:pad4tIMdDzdRqCPkJ1Oxlf1J8NRo0Tud2OY11gsBEOo=
 github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs v1.52.0 h1:m6kVT+00x2NuB5ZEBbEV0rT1RCmf5e5e3yiQ7moWBbQ=
 github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs v1.52.0/go.mod h1:UseIHRfrm7PqeZo6fcTb6FUCXzCnh1KJbQbmOfxArGM=
 github.com/aws/aws-sdk-go-v2/service/ec2 v1.233.0 h1:VxmOsv7MswuKQcSEIurxe4RK9tC6zYnosw9vBvv74lA=
@@ -28,6 +34,8 @@ github.com/aws/aws-sdk-go-v2/service/ecs v1.60.1 h1:AsxK/ozpxjdYeZpdayHHt0GKW4zz
 github.com/aws/aws-sdk-go-v2/service/ecs v1.60.1/go.mod h1:pdlaA4blEEJRmelr7ZhfecQ5gPPNvdeBfDzUZrfiGGI=
 github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2 v1.46.0 h1:3nrkDeiPreARHMoqvS+umxTKcDVkqnRPlz01/kVgG7U=
 github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2 v1.46.0/go.mod h1:E+At5Cto6ntT+qaNs3RpJKsx1GaFaNB3zzNUFhHL8DE=
+github.com/aws/aws-sdk-go-v2/service/iam v1.43.1 h1:xpPZZpbmqIJse9OH+Kf/bW/n+bRe0BtE/LtHvBJYcbc=
+github.com/aws/aws-sdk-go-v2/service/iam v1.43.1/go.mod h1:/IEkOg5Gkv2HFxOb3Prs84xpRyxO9P/9Zow/clWl84Q=
 github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.12.4 h1:CXV68E2dNqhuynZJPB80bhPQwAKqBWVer887figW6Jc=
 github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.12.4/go.mod h1:/xFi9KtvBXP97ppCz1TAEvU1Uf66qvid89rbem3wCzQ=
 github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.7.4 h1:nAP2GYbfh8dd2zGZqFRSMlq+/F6cMPBUuCsGAMkN074=
@@ -36,6 +44,8 @@ github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.12.17 h1:t0E6FzRE
 github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.12.17/go.mod h1:ygpklyoaypuyDvOM5ujWGrYWpAK3h7ugnmKCU/76Ys4=
 github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.18.17 h1:qcLWgdhq45sDM9na4cvXax9dyLitn8EYBRl8Ak4XtG4=
 github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.18.17/go.mod h1:M+jkjBFZ2J6DJrjMv2+vkBbuht6kxJYtJiwoVgX4p4U=
+github.com/aws/aws-sdk-go-v2/service/lambda v1.72.1 h1:+OB7rDFFAjNj6WeDwvP4yQVQxqiy1VSr9+6UzVNFRhw=
+github.com/aws/aws-sdk-go-v2/service/lambda v1.72.1/go.mod h1:JE2aLHT2ZIj9Ep5mBJ9jWUnrce6twtmVsWIbuGFL4xg=
 github.com/aws/aws-sdk-go-v2/service/route53 v1.53.0 h1:UglIEyurCqfzZkjNdYAuXUGFu/FNWMKP5eorzggvXe8=
 github.com/aws/aws-sdk-go-v2/service/route53 v1.53.0/go.mod h1:wi1naoiPnCQG3cyjsivwPON1ZmQt/EJGxFqXzubBTAw=
 github.com/aws/aws-sdk-go-v2/service/s3 v1.84.0 h1:0reDqfEN+tB+sozj2r92Bep8MEwBZgtAXTND1Kk9OXg=

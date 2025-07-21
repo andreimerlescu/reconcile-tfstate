@@ -8,10 +8,15 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/acm"
+	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
+	"github.com/aws/aws-sdk-go-v2/service/cloudfront"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
 	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
 	"github.com/aws/aws-sdk-go-v2/service/route53"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
@@ -36,6 +41,11 @@ func NewAWSClient(ctx context.Context, region string) (*AWSClient, error) {
 		SSMClient:            ssm.NewFromConfig(cfg),
 		SecretsManagerClient: secretsmanager.NewFromConfig(cfg),
 		ECSClient:            ecs.NewFromConfig(cfg),
+		AutoscalingClient:    autoscaling.NewFromConfig(cfg),
+		CloudWatchClient:     cloudwatch.NewFromConfig(cfg),
+		IAMClient:            iam.NewFromConfig(cfg),
+		LambdaClient:         lambda.NewFromConfig(cfg),
+		CloudFrontClient:     cloudfront.NewFromConfig(cfg),
 	}, nil
 }
 
