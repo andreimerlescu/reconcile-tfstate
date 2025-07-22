@@ -12,7 +12,8 @@ import (
 // handleExecution encapsulates the logic for executing commands and uploading the state file.
 func handleExecution(ctx context.Context, awsClients *AWSClient, config *Config, results *categorizedResults, localStateFilePath, statePathForTerraformCLI string, stateFileModified *bool) {
 	if config.ExecuteCommands {
-		stateWasModifiedByCommands, err := executeCommands(results.RunCommands, localStateFilePath, statePathForTerraformCLI)
+		// Removed localStateFilePath from the call since it's not used in executeCommands
+		stateWasModifiedByCommands, err := executeCommands(results.RunCommands, statePathForTerraformCLI)
 		if err != nil {
 			log.Fatalf("Failed to execute remediation commands: %v", err)
 		}
@@ -48,8 +49,8 @@ func handleExecution(ctx context.Context, awsClients *AWSClient, config *Config,
 
 // executeCommands iterates through the provided commands and executes them.
 // It returns an error if any command fails.
-// It now takes `statePathForTerraformCLI` which can be an `s3://` URI.
-func executeCommands(commands []string, localStateFilePath, statePathForTerraformCLI string) (bool, error) {
+// Removed localStateFilePath from parameters as it's unused.
+func executeCommands(commands []string, statePathForTerraformCLI string) (bool, error) {
 	if len(commands) == 0 {
 		fmt.Println("\nNo remediation commands to execute.")
 		return false, nil // No commands, so no modification

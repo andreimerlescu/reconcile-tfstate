@@ -33,6 +33,7 @@ type (
 		S3Key           string
 		ExecuteCommands bool
 		BackupsDir      string
+		JsonOutput      bool // NEW: Flag for JSON output
 	}
 
 	// ResourceStatus represents the status of a resource after checking AWS
@@ -45,6 +46,11 @@ type (
 		Category         string // INFO, OK, WARNING, ERROR, POTENTIAL_IMPORT, DANGEROUS, REGION_MISMATCH
 		Message          string // The descriptive message
 		Command          string // The terraform import/state rm command, if applicable
+		Kind             string // "data" or "resource" for JSON output
+		TFID             string // Terraform ID for JSON output
+		AWSID            string // AWS ID for JSON output
+		Stdout           string // Stdout from command execution (if any, currently empty)
+		Stderr           string // Stderr from command execution (if any, currently empty)
 	}
 
 	// AWSClient holds all necessary AWS service clients
@@ -153,5 +159,47 @@ type (
 		DangerousResults       []ResourceStatus
 		RegionMismatchResults  []ResourceStatus
 		RunCommands            []string
+	}
+
+	JSONBackupPaths struct {
+		OriginalPath     string `json:"original_path"`
+		OriginalChecksum string `json:"original_checksum"`
+		NewPath          string `json:"new_path"`
+		NewChecksum      string `json:"new_checksum"`
+		ReportPath       string `json:"report_path"`
+		ReportChecksum   string `json:"report_checksum"`
+	}
+
+	JSONResultItem struct {
+		Kind     string `json:"kind"`
+		Resource string `json:"resource"`
+		TFID     string `json:"tf_id"`
+		AWSID    string `json:"aws_id"`
+		Command  string `json:"command"`
+		Stdout   string `json:"stdout"`
+		Stderr   string `json:"stderr"`
+	}
+
+	JSONResults struct {
+		InfoResults            []JSONResultItem `json:"INFO"`
+		OkResults              []JSONResultItem `json:"OK"`
+		PotentialImportResults []JSONResultItem `json:"POTENTIAL_IMPORT"`
+		RegionMismatchResults  []JSONResultItem `json:"REGION_MISMATCH"`
+		WarningResults         []JSONResultItem `json:"WARNING"`
+		ErrorResults           []JSONResultItem `json:"ERROR"`
+		DangerousResults       []JSONResultItem `json:"DANGEROUS"`
+	}
+
+	JSONOutput struct {
+		State          string          `json:"state"`
+		StateChecksum  string          `json:"state_checksum"`
+		Region         string          `json:"region"`
+		LocalStateFile string          `json:"local_statefile"`
+		TFVersion      string          `json:"tf_version"`
+		StateVersion   uint64          `json:"state_version"`
+		Concurrency    int             `json:"concurrency"`
+		Backup         JSONBackupPaths `json:"backup"`
+		Commands       []string        `json:"commands"`
+		Results        JSONResults     `json:"results"`
 	}
 )

@@ -17,6 +17,7 @@ func parseAndValidateConfig() Config {
 	showVersion := flag.Bool("v", false, "Show version")
 	shouldExecute := flag.Bool("should-execute", false, "If true, automatically execute the suggested 'terraform import' and 'terraform state rm' commands.") // New flag
 	backupsDir := flag.String("backups-dir", filepath.Join(".", "backups"), "Directory to store local backups and reports.")
+	jsonOutput := flag.Bool("json", false, "If true, render results in JSON format to stdout.") // NEW: JSON flag
 
 	flag.Parse()
 
@@ -41,6 +42,7 @@ func parseAndValidateConfig() Config {
 		S3State:         *s3State,
 		ExecuteCommands: *shouldExecute,
 		BackupsDir:      *backupsDir,
+		JsonOutput:      *jsonOutput,
 	}
 
 	if *s3State != "" {

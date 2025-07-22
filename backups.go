@@ -22,15 +22,24 @@ import (
 // originalFileName: the base name of the state file (e.g., "dev.tfstate")
 // prefix: "original", "new", "report"
 // timestamp: formatted timestamp string (e.g., "02-15-04")
-// suffix: optional additional suffix like ".sha256" or ".md"
-func createBackupPath(baseDir, originalFileName, prefix, timestamp, suffix string) string {
-	// Extract just the base name (e.g., "dev.tfstate" from a longer local path or S3 key)
+// finalExtension: the desired final extension for the file, e.g., ".tfstate", ".json", ".md", ".sha256"
+func createBackupPath(baseDir, originalFileName, prefix, timestamp, finalExtension string) string {
+	// Extract just the base name from originalFileName, stripping only .tfstate if present.
+	// This ensures we get "dev" from "dev.tfstate", or "myfile" from "myfile.txt".
 	base := filepath.Base(originalFileName)
-	// Remove .tfstate if present for a cleaner filename before appending prefix/timestamp
-	nameWithoutExt := strings.TrimSuffix(base, filepath.Ext(base))
-	ext := filepath.Ext(base)
+	nameWithoutTfstateExt := strings.TrimSuffix(strings.ToLower(base), ".tfstate")                  // Always strip .tfstate first
+	cleanBaseName := strings.TrimSuffix(nameWithoutTfstateExt, filepath.Ext(nameWithoutTfstateExt)) // Strip any other extension after .tfstate is handled (e.g., if original was "file.txt.tfstate")
 
-	// Format: <baseDir>/YYYY/MM/<timestamp>/<prefix>.<nameWithoutExt><ext><suffix>
+	// Special handling for originalFileName if it was like "tfstate-download-123.tfstate"
+	// We want to extract "tfstate-download-123" as the base name.
+	// If the cleanBaseName is empty (e.g., if originalFileName was just ".tfstate"), default to "state".
+	if cleanBaseName == "" && strings.HasSuffix(strings.ToLower(base), ".tfstate") {
+		cleanBaseName = strings.TrimSuffix(base, ".tfstate")
+	} else if cleanBaseName == "" { // e.g. for `tfstate-download-123`
+		cleanBaseName = base
+	}
+
+	// Format: <baseDir>/YYYY/MM/<timestamp>/<prefix>.<cleanBaseName><finalExtension>
 	yearMonth := time.Now().Format("2006/01") // YYYY/MM
 
 	// Create subdirectories if they don't exist
@@ -42,7 +51,8 @@ func createBackupPath(baseDir, originalFileName, prefix, timestamp, suffix strin
 		dir = baseDir
 	}
 
-	return filepath.Join(dir, fmt.Sprintf("%s.%s%s%s", prefix, nameWithoutExt, ext, suffix))
+	// Combine components: prefix.cleanBaseName.finalExtension
+	return filepath.Join(dir, fmt.Sprintf("%s.%s%s", prefix, cleanBaseName, finalExtension))
 }
 
 // uploadFileToS3 uploads a local file to S3.

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -50,10 +51,18 @@ func printReportHeader(localStateFilePath string, tfState *TFStateFile, awsRegio
 
 // sortResults sorts the collected ResourceStatus slices by TerraformAddress.
 func sortResults(results *categorizedResults) {
-	sort.Slice(results.InfoResults, func(i, j int) bool { return results.InfoResults[i].TerraformAddress < results.InfoResults[j].TerraformAddress })
-	sort.Slice(results.OkResults, func(i, j int) bool { return results.OkResults[i].TerraformAddress < results.OkResults[j].TerraformAddress })
-	sort.Slice(results.WarningResults, func(i, j int) bool { return results.WarningResults[i].TerraformAddress < results.WarningResults[j].TerraformAddress })
-	sort.Slice(results.ErrorResults, func(i, j int) bool { return results.ErrorResults[i].TerraformAddress < results.ErrorResults[j].TerraformAddress })
+	sort.Slice(results.InfoResults, func(i, j int) bool {
+		return results.InfoResults[i].TerraformAddress < results.InfoResults[j].TerraformAddress
+	})
+	sort.Slice(results.OkResults, func(i, j int) bool {
+		return results.OkResults[i].TerraformAddress < results.OkResults[j].TerraformAddress
+	})
+	sort.Slice(results.WarningResults, func(i, j int) bool {
+		return results.WarningResults[i].TerraformAddress < results.WarningResults[j].TerraformAddress
+	})
+	sort.Slice(results.ErrorResults, func(i, j int) bool {
+		return results.ErrorResults[i].TerraformAddress < results.ErrorResults[j].TerraformAddress
+	})
 	sort.Slice(results.PotentialImportResults, func(i, j int) bool {
 		return results.PotentialImportResults[i].TerraformAddress < results.PotentialImportResults[j].TerraformAddress
 	})
@@ -77,10 +86,12 @@ func printCategoryToBuilder(builder *strings.Builder, title string, results []Re
 }
 
 // renderResultsToString renders the categorized and sorted results to a string, along with S3 upload instructions if applicable.
+// IMPORTANT: This function no longer prints final S3/local state update messages. These are handled in main.go
+// so that JSON output can also include the full paths/checksums.
 func renderResultsToString(
 	results *categorizedResults,
 	config Config,
-	tfStateFile *TFStateFile, // CORRECTED: Added tfStateFile parameter
+	tfStateFile *TFStateFile,
 	stateFileModified bool,
 	contentChanged bool,
 	originalHash, newHash string,
@@ -88,7 +99,12 @@ func renderResultsToString(
 	var builder strings.Builder
 
 	builder.WriteString("--- Terraform State Reconciliation Report ---\n")
-	builder.WriteString(fmt.Sprintf("State File: %s (State Version: %d, Terraform Version: %s)\n", config.StateFilePath, tfStateFile.Version, tfStateFile.TerraformVersion))
+	// Use config.S3State if available, otherwise fallback to config.StateFilePath for the report header
+	stateIdentifier := config.StateFilePath
+	if config.IsS3State {
+		stateIdentifier = config.S3State
+	}
+	builder.WriteString(fmt.Sprintf("State File: %s (State Version: %d, Terraform Version: %s)\n", stateIdentifier, tfStateFile.Version, tfStateFile.TerraformVersion))
 	builder.WriteString(fmt.Sprintf("AWS Region: %s\n", config.AWSRegion))
 	builder.WriteString(fmt.Sprintf("Concurrency: %d\n", config.Concurrency))
 	builder.WriteString(fmt.Sprintf("Backups Directory: %s\n", config.BackupsDir))
@@ -125,32 +141,108 @@ func renderResultsToString(
 		}
 	}
 
-	if config.IsS3State {
-		builder.WriteString(fmt.Sprintf("\n--- S3 STATE FILE UPLOAD STATUS ---\n")) // Changed instruction to status
-		if config.ExecuteCommands {
-			if contentChanged {
-				builder.WriteString("The updated state file was automatically uploaded to S3 (and backed up) since '--should-execute' was enabled.\n")
-			} else {
-				builder.WriteString("No 'terraform import' or 'terraform state rm' commands were executed that would modify the state file. No S3 re-upload of latest state was needed.\n")
-			}
-		} else {
-			builder.WriteString(fmt.Sprintf("After you have executed the `terraform import` and `terraform state rm` commands above, "))
-			builder.WriteString(fmt.Sprintf("your local state file '%s' will be modified. ", config.StateFilePath))
-			builder.WriteString(fmt.Sprintf("To upload the updated state file back to S3 (preserving history with versioning), run:\n"))
-			builder.WriteString(fmt.Sprintf("   aws s3 cp %s s3://%s/%s --metadata-directive REPLACE --acl bucket-owner-full-control\n", config.StateFilePath, config.S3Bucket, config.S3Key))
-			builder.WriteString(fmt.Sprintf("NOTE: The `--metadata-directive REPLACE` and `--acl bucket-owner-full-control` ensure existing metadata is replaced and proper ownership is maintained. Adjust ACL as per your bucket policy.\n"))
+	return builder.String()
+}
+
+// convertResourceStatusToJSONItem converts a slice of ResourceStatus to JSONResultItem.
+func convertResourceStatusToJSONItem(statuses []ResourceStatus) []JSONResultItem {
+	items := make([]JSONResultItem, len(statuses))
+	for i, s := range statuses {
+		items[i] = JSONResultItem{
+			Kind:     s.Kind,
+			Resource: s.TerraformAddress,
+			TFID:     s.StateID, // Use StateID as tf_id
+			AWSID:    s.LiveID,  // Use LiveID as aws_id
+			Command:  s.Command,
+			Stdout:   s.Stdout, // Will be empty unless command execution captures it
+			Stderr:   s.Stderr, // Will be empty unless command execution captures it
 		}
-	} else { // Local state, not S3
-		if contentChanged {
-			builder.WriteString(fmt.Sprintf("\nLocal state file '%s' was modified. A backup of the 'original' state and the 'new' state are in '%s'.\n", config.StateFilePath, config.BackupsDir))
-		} else {
-			builder.WriteString("\nNo changes to the local state file detected. No new backups created.\n")
+	}
+	return items
+}
+
+// renderResultsToJson renders the categorized and sorted results to a JSON string.
+func renderResultsToJson(
+	results *categorizedResults,
+	config Config,
+	tfStateFile *TFStateFile,
+	localStateFilePath string,
+	stateFileModified bool, // This is true if `executeCommands` ran and potentially modified.
+	originalStateFileHash string,
+	originalBackupLocalPath string,
+	newLocalStatePath string,
+	reportLocalPathMD string, // Renamed to clearly indicate it's the MD report path
+) (string, error) {
+
+	// Always calculate newStateFileHash if localStateFilePath is available.
+	// It will be the same as originalStateFileHash if no modifications occurred.
+	var finalStateChecksum string
+	calculatedNewStateHash, hashErr := calculateFileSHA256(localStateFilePath)
+	if hashErr != nil {
+		fmt.Printf("WARNING: Failed to calculate SHA256 for final local state file: %v\n", hashErr)
+		finalStateChecksum = originalStateFileHash // Fallback to original if calculation fails
+	} else {
+		finalStateChecksum = calculatedNewStateHash
+	}
+
+	// Determine paths for JSON output
+	jsonBackupPaths := JSONBackupPaths{
+		OriginalPath: originalBackupLocalPath,
+		NewPath:      newLocalStatePath,
+		ReportPath:   reportLocalPathMD, // Use the MD report path here, as JSON output also contains report_path field
+	}
+
+	// Get checksums for backup files (these would have been created by handlePostReconciliationBackupsAndUpload)
+	if originalBackupLocalPath != "" {
+		hash, err := calculateFileSHA256(originalBackupLocalPath)
+		if err == nil {
+			jsonBackupPaths.OriginalChecksum = hash
+		}
+	}
+	if newLocalStatePath != "" { // Check if the new backup file exists before trying to hash it
+		hash, err := calculateFileSHA256(newLocalStatePath)
+		if err == nil {
+			jsonBackupPaths.NewChecksum = hash
+		}
+	}
+	if reportLocalPathMD != "" { // Use reportLocalPathMD to hash the MD file
+		hash, err := calculateFileSHA256(reportLocalPathMD)
+		if err == nil {
+			jsonBackupPaths.ReportChecksum = hash
 		}
 	}
 
-	builder.WriteString("\n--- End of Report ---\n")
-	builder.WriteString("NOTE: This tool covers only a few resource types. Extend 'processResourceInstance' for full coverage.\n")
-	builder.WriteString("\n")
+	// Correctly set the 'state' field based on whether it's an S3 state or local
+	stateIdentifier := config.StateFilePath
+	if config.IsS3State {
+		stateIdentifier = config.S3State
+	}
 
-	return builder.String()
+	jsonOutput := JSONOutput{
+		State:          stateIdentifier, // CORRECTED: Use stateIdentifier here
+		StateChecksum:  finalStateChecksum,
+		Region:         config.AWSRegion,
+		LocalStateFile: localStateFilePath,
+		TFVersion:      tfStateFile.TerraformVersion,
+		StateVersion:   tfStateFile.Version,
+		Concurrency:    config.Concurrency,
+		Backup:         jsonBackupPaths,
+		Commands:       results.RunCommands,
+		Results: JSONResults{
+			InfoResults:            convertResourceStatusToJSONItem(results.InfoResults),
+			OkResults:              convertResourceStatusToJSONItem(results.OkResults),
+			PotentialImportResults: convertResourceStatusToJSONItem(results.PotentialImportResults),
+			RegionMismatchResults:  convertResourceStatusToJSONItem(results.RegionMismatchResults),
+			WarningResults:         convertResourceStatusToJSONItem(results.WarningResults),
+			ErrorResults:           convertResourceStatusToJSONItem(results.ErrorResults),
+			DangerousResults:       convertResourceStatusToJSONItem(results.DangerousResults),
+		},
+	}
+
+	jsonData, err := json.MarshalIndent(jsonOutput, "", "\t")
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal JSON output: %w", err)
+	}
+
+	return string(jsonData), nil
 }

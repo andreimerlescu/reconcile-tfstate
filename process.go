@@ -22,6 +22,12 @@ func processResources(ctx context.Context, awsClients *AWSClient, tfState *TFSta
 				go func(res ResourceStateV4, inst InstanceObjectStateV4) {
 					defer wg.Done()
 					status := processResourceInstance(ctx, awsClients, res, inst, awsRegion, &regionMismatchErrors)
+					// Determine Kind for JSON output
+					if res.Mode == "data" {
+						status.Kind = "data"
+					} else {
+						status.Kind = "resource" // Default to resource
+					}
 					resultsChan <- status
 				}(resource, instance)
 			}
@@ -92,6 +98,7 @@ func processResourceInstance(ctx context.Context, clients *AWSClient, resource R
 				Error:            fmt.Errorf("failed to unmarshal resource attributes for %s: %w", tfAddress, err),
 				Category:         "ERROR",
 				Message:          fmt.Sprintf("Failed to unmarshal attributes for %s: %v", tfAddress, err),
+				Kind:             resource.Mode, // Added Kind
 			}
 		}
 	} else if len(instance.AttributesFlat) > 0 {
@@ -105,6 +112,7 @@ func processResourceInstance(ctx context.Context, clients *AWSClient, resource R
 	stateID, _ := attributes["id"].(string) // Get ID from attributes map
 
 	status := ResourceStatus{TerraformAddress: tfAddress, StateID: stateID}
+	status.Kind = resource.Mode // Set Kind here as well
 
 	// Common ARN attribute for region check (extracted here for all ARN-based resources)
 	var arnInState string
@@ -151,6 +159,8 @@ func processResourceInstance(ctx context.Context, clients *AWSClient, resource R
 			status.Category = "REGION_MISMATCH"
 			status.Message = fmt.Sprintf("%s (state file claims in '%s') not found in '%s'. Suggest `terraform state rm %s` if resource moved.", tfAddress, stateRegionFromARN, currentFlagRegion, tfAddress)
 			status.Command = fmt.Sprintf("terraform state rm %s", tfAddress)
+			status.TFID = stateRegionFromARN // For JSON output
+			status.AWSID = currentFlagRegion // For JSON output
 			return status
 		}
 	}
@@ -229,6 +239,8 @@ func processResourceInstance(ctx context.Context, clients *AWSClient, resource R
 	case "aws_caller_identity", "aws_iam_policy_document", "archive_file", "local_file", "random_password":
 		status.Category = "INFO"
 		status.Message = fmt.Sprintf("Data/Local resource '%s'. No external verification needed.", tfAddress)
+		status.TFID = stateID // Set TFID and AWSID for JSON
+		status.AWSID = liveID // Will be empty in this case
 		return status
 	case "aws_security_group_rule":
 		if sgRuleAWSID, ok := attributes["security_group_rule_id"].(string); ok && sgRuleAWSID != "" {
@@ -236,6 +248,8 @@ func processResourceInstance(ctx context.Context, clients *AWSClient, resource R
 		} else {
 			status.Category = "WARNING"
 			status.Message = fmt.Sprintf("Resource type '%s' (ID: %s) verification is complex and 'security_group_rule_id' not found in state attributes. Manual verification recommended.", resource.Type, stateID)
+			status.TFID = stateID
+			status.AWSID = liveID
 			return status
 		}
 	case "aws_acm_certificate":
@@ -277,6 +291,7 @@ func processResourceInstance(ctx context.Context, clients *AWSClient, resource R
 					Error:            fmt.Errorf("neither 'name' nor 'cluster_name' attribute found or are null for aws_ecs_cluster. Raw values: name=%v, cluster_name=%v", attributes["name"], attributes["cluster_name"]),
 					Category:         "ERROR",
 					Message:          fmt.Sprintf("Failed to retrieve valid name/cluster_name attribute for %s. Inspect state file.", tfAddress),
+					Kind:             resource.Mode, // Added Kind
 				}
 			}
 		}
@@ -287,6 +302,7 @@ func processResourceInstance(ctx context.Context, clients *AWSClient, resource R
 				Error:            fmt.Errorf("attribute for aws_ecs_cluster converted to an empty string. Raw value: %v", val),
 				Category:         "ERROR",
 				Message:          fmt.Sprintf("Failed to retrieve valid name/cluster_name attribute for %s. Inspect state file.", tfAddress),
+				Kind:             resource.Mode, // Added Kind
 			}
 		}
 		liveID, exists, err = clients.verifyECSCluster(ctx, clusterName)
@@ -295,12 +311,14 @@ func processResourceInstance(ctx context.Context, clients *AWSClient, resource R
 		if !ok || val == nil {
 			status.Category = "ERROR"
 			status.Message = fmt.Sprintf("Data source '%s' has no valid 'name' attribute for region. Raw value: %v", tfAddress, attributes["name"])
+			status.Kind = resource.Mode // Added Kind
 			return status
 		}
 		regionInState := fmt.Sprintf("%v", val)
 		if regionInState == "" {
 			status.Category = "ERROR"
 			status.Message = fmt.Sprintf("Data source '%s' 'name' attribute converted to an empty string. Raw value: %v", tfAddress, val)
+			status.Kind = resource.Mode // Added Kind
 			return status
 		}
 
@@ -309,6 +327,8 @@ func processResourceInstance(ctx context.Context, clients *AWSClient, resource R
 			status.Message = fmt.Sprintf("%s (ID: %s) resolves to current region and is in state.", tfAddress, regionInState)
 			status.LiveID = regionInState
 			status.ExistsInAWS = true
+			status.TFID = regionInState  // For JSON output
+			status.AWSID = regionInState // For JSON output
 			return status
 		} else {
 			// If the region in state doesn't match the currently checked region
@@ -317,6 +337,8 @@ func processResourceInstance(ctx context.Context, clients *AWSClient, resource R
 			status.Category = "REGION_MISMATCH"
 			status.Message = fmt.Sprintf("%s (state file claims region '%s') does not match current region '%s'. Suggest `terraform state rm %s` if resource moved or is irrelevant.", tfAddress, regionInState, currentFlagRegion, tfAddress)
 			status.Command = fmt.Sprintf("terraform state rm %s", tfAddress)
+			status.TFID = regionInState      // For JSON output
+			status.AWSID = currentFlagRegion // For JSON output
 			return status
 		}
 	case "aws_ssm_parameter":
@@ -529,6 +551,7 @@ func processResourceInstance(ctx context.Context, clients *AWSClient, resource R
 				Error:            fmt.Errorf("attribute 'cluster' for aws_ecs_service is missing or null. Raw value: %v", attributes["cluster"]),
 				Category:         "ERROR",
 				Message:          fmt.Sprintf("Failed to retrieve valid 'cluster' attribute for %s. Inspect state file.", tfAddress),
+				Kind:             resource.Mode, // Added Kind
 			}
 		}
 		clusterName := fmt.Sprintf("%v", valCluster) // Robustly convert to string
@@ -538,6 +561,7 @@ func processResourceInstance(ctx context.Context, clients *AWSClient, resource R
 				Error:            fmt.Errorf("attribute 'cluster' for aws_ecs_service converted to an empty string. Raw value: %v", valCluster),
 				Category:         "ERROR",
 				Message:          fmt.Sprintf("Failed to retrieve valid 'cluster' attribute for %s. Inspect state file.", tfAddress),
+				Kind:             resource.Mode, // Added Kind
 			}
 		}
 
@@ -549,6 +573,7 @@ func processResourceInstance(ctx context.Context, clients *AWSClient, resource R
 				Error:            fmt.Errorf("attribute 'name' for aws_ecs_service is missing or null. Raw value: %v", attributes["name"]),
 				Category:         "ERROR",
 				Message:          fmt.Sprintf("Failed to retrieve valid 'name' attribute for %s. Inspect state file.", tfAddress),
+				Kind:             resource.Mode, // Added Kind
 			}
 		}
 		serviceName := fmt.Sprintf("%v", valService) // Robustly convert to string
@@ -558,6 +583,7 @@ func processResourceInstance(ctx context.Context, clients *AWSClient, resource R
 				Error:            fmt.Errorf("attribute 'name' for aws_ecs_service converted to an empty string. Raw value: %v", valService),
 				Category:         "ERROR",
 				Message:          fmt.Sprintf("Failed to retrieve valid 'name' attribute for %s. Inspect state file.", tfAddress),
+				Kind:             resource.Mode, // Added Kind
 			}
 		}
 		liveID, exists, err = clients.verifyECSService(ctx, clusterName, serviceName)
@@ -569,6 +595,7 @@ func processResourceInstance(ctx context.Context, clients *AWSClient, resource R
 				Error:            fmt.Errorf("attribute 'arn' for aws_ecs_task_definition is missing or null. Raw value: %v", attributes["arn"]),
 				Category:         "ERROR",
 				Message:          fmt.Sprintf("Failed to retrieve valid 'arn' attribute for %s. Inspect state file.", tfAddress),
+				Kind:             resource.Mode, // Added Kind
 			}
 		}
 		taskDefinitionARN := fmt.Sprintf("%v", val) // Robustly convert to string
@@ -578,6 +605,7 @@ func processResourceInstance(ctx context.Context, clients *AWSClient, resource R
 				Error:            fmt.Errorf("attribute 'arn' for aws_ecs_task_definition converted to an empty string. Raw value: %v", val),
 				Category:         "ERROR",
 				Message:          fmt.Sprintf("Failed to retrieve valid 'arn' attribute for %s. Inspect state file.", tfAddress),
+				Kind:             resource.Mode, // Added Kind
 			}
 		}
 		liveID, exists, err = clients.verifyECSTaskDefinition(ctx, taskDefinitionARN)
@@ -593,6 +621,8 @@ func processResourceInstance(ctx context.Context, clients *AWSClient, resource R
 	default:
 		status.Category = "WARNING"
 		status.Message = fmt.Sprintf("Resource type '%s' not supported by this checker. Manual verification needed.", resource.Type)
+		status.TFID = stateID
+		status.AWSID = liveID
 		return status
 	}
 
@@ -603,19 +633,27 @@ func processResourceInstance(ctx context.Context, clients *AWSClient, resource R
 	if err != nil {
 		status.Category = "ERROR"
 		status.Message = fmt.Sprintf("Failed to verify %s: %v", tfAddress, err)
+		status.TFID = stateID // For JSON output
+		status.AWSID = liveID // For JSON output
 	} else if exists {
 		if stateID == liveID || stateID == "" {
 			status.Category = "OK"
 			status.Message = fmt.Sprintf("%s (ID: %s) exists in state and AWS.", tfAddress, liveID)
+			status.TFID = stateID // For JSON output
+			status.AWSID = liveID // For JSON output
 		} else {
 			status.Category = "POTENTIAL_IMPORT"
 			status.Message = fmt.Sprintf("%s exists in AWS with ID '%s'. State ID: '%s'.", tfAddress, liveID, stateID)
 			status.Command = fmt.Sprintf("terraform import %s %s", tfAddress, liveID)
+			status.TFID = stateID // For JSON output
+			status.AWSID = liveID // For JSON output
 		}
 	} else {
 		status.Category = "DANGEROUS"
 		status.Message = fmt.Sprintf("%s (ID: %s) is in state but NOT FOUND in AWS.", tfAddress, stateID)
 		status.Command = fmt.Sprintf("terraform state rm %s", tfAddress)
+		status.TFID = stateID // For JSON output
+		status.AWSID = liveID // For JSON output
 	}
 
 	return status
