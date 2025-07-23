@@ -7,12 +7,12 @@ import (
 	"strings"
 )
 
-// printDetailedResultsToStdout prints the categorized results to the standard output.
 // printCategoryToStdout is a helper function to print results for a given category directly to stdout.
 func printCategoryToStdout(title string, results []ResourceStatus) {
 	if len(results) > 0 {
 		fmt.Printf("\n--- %s (%d) ---\n", title, len(results))
 		for _, res := range results {
+			// CORRECTED: Access res.Category
 			fmt.Printf("%s: %s\n", res.Category, res.Message)
 		}
 	}
@@ -35,17 +35,40 @@ func printDetailedResultsToStdout(results *categorizedResults) {
 			fmt.Printf("   %s\n", cmd)
 		}
 	}
+
+	if len(results.CommandExecutionLogs) > 0 {
+		fmt.Printf("\n--- COMMAND EXECUTION LOGS (%d) ---\n", len(results.CommandExecutionLogs))
+		for _, log := range results.CommandExecutionLogs {
+			fmt.Printf("Command: %s\n", log.Command)
+			fmt.Printf("Exit Code: %d\n", log.ExitCode)
+			if log.Error != "" {
+				fmt.Printf("Error: %s\n", log.Error)
+			}
+			if log.Stdout != "" {
+				fmt.Printf("Stdout:\n%s\n", log.Stdout)
+			}
+			if log.Stderr != "" {
+				fmt.Printf("Stderr:\n%s\n", log.Stderr)
+			}
+			fmt.Println("---")
+		}
+	}
+
+	if results.ApplicationError != "" {
+		fmt.Printf("\n--- APPLICATION ERROR ---\n%s\n", results.ApplicationError)
+	}
+
 	fmt.Println("-------------------------------------------")
 }
 
 // printReportHeader prints the initial header for the reconciliation report.
-// This function is still used for console output, but the main report is now generated via renderResultsToString.
-func printReportHeader(localStateFilePath string, tfState *TFStateFile, awsRegion string, concurrency int) {
+func printReportHeader(localStateFilePath string, tfState *TFStateFile, awsRegion string, concurrency int, backupsDir string) {
 	fmt.Println("--- Terraform State Reconciliation Report ---")
 	fmt.Printf("State File: %s (State Version: %d, Terraform Version: %s)\n", localStateFilePath, tfState.Version, tfState.TerraformVersion)
 	fmt.Printf("AWS Region: %s\n", awsRegion)
 	fmt.Printf("Concurrency: %d\n", concurrency)
-	fmt.Printf("-------------------------------------------\n") // Added newline for clarity
+	fmt.Printf("Backups Directory: %s\n", backupsDir) // Added backups directory
+	fmt.Printf("-------------------------------------------\n")
 	fmt.Println("")
 }
 
@@ -73,21 +96,26 @@ func sortResults(results *categorizedResults) {
 		return results.RegionMismatchResults[i].TerraformAddress < results.RegionMismatchResults[j].TerraformAddress
 	})
 	sort.Strings(results.RunCommands)
+	// Sort command execution logs by command string for consistent output
+	sort.Slice(results.CommandExecutionLogs, func(i, j int) bool {
+		// CORRECTED: Typo fixed from .C to .Command
+		return results.CommandExecutionLogs[i].Command < results.CommandExecutionLogs[j].Command
+	})
 }
 
 // printCategoryToBuilder is a helper function to print results for a given category to a string builder.
+// This is used for Markdown report generation.
 func printCategoryToBuilder(builder *strings.Builder, title string, results []ResourceStatus) {
 	if len(results) > 0 {
 		builder.WriteString(fmt.Sprintf("\n--- %s (%d) ---\n", title, len(results)))
 		for _, res := range results {
+			// CORRECTED: Access res.Category
 			builder.WriteString(fmt.Sprintf("%s: %s\n", res.Category, res.Message))
 		}
 	}
 }
 
 // renderResultsToString renders the categorized and sorted results to a string, along with S3 upload instructions if applicable.
-// IMPORTANT: This function no longer prints final S3/local state update messages. These are handled in main.go
-// so that JSON output can also include the full paths/checksums.
 func renderResultsToString(
 	results *categorizedResults,
 	config Config,
@@ -135,10 +163,32 @@ func renderResultsToString(
 	printCategoryToBuilder(&builder, "DANGEROUS Results", results.DangerousResults)
 
 	if len(results.RunCommands) > 0 {
-		builder.WriteString(fmt.Sprintf("\n--- RUN THESE COMMANDS (%d) ---\n", len(results.RunCommands)))
+		builder.WriteString(fmt.Sprintf("\n--- SUGGESTED REMEDIATION COMMANDS (%d) ---\n", len(results.RunCommands)))
 		for _, cmd := range results.RunCommands {
 			builder.WriteString(fmt.Sprintf("   %s\n", cmd))
 		}
+	}
+
+	if len(results.CommandExecutionLogs) > 0 {
+		builder.WriteString(fmt.Sprintf("\n--- COMMAND EXECUTION LOGS (%d) ---\n", len(results.CommandExecutionLogs)))
+		for _, log := range results.CommandExecutionLogs {
+			builder.WriteString(fmt.Sprintf("Command: %s\n", log.Command))
+			builder.WriteString(fmt.Sprintf("Exit Code: %d\n", log.ExitCode))
+			if log.Error != "" {
+				builder.WriteString(fmt.Sprintf("Error: %s\n", log.Error))
+			}
+			if log.Stdout != "" {
+				builder.WriteString(fmt.Sprintf("Stdout:\n%s\n", log.Stdout))
+			}
+			if log.Stderr != "" {
+				builder.WriteString(fmt.Sprintf("Stderr:\n%s\n", log.Stderr))
+			}
+			builder.WriteString("---\n")
+		}
+	}
+
+	if results.ApplicationError != "" {
+		builder.WriteString(fmt.Sprintf("\n--- APPLICATION ERROR ---\n%s\n", results.ApplicationError))
 	}
 
 	return builder.String()
@@ -151,11 +201,11 @@ func convertResourceStatusToJSONItem(statuses []ResourceStatus) []JSONResultItem
 		items[i] = JSONResultItem{
 			Kind:     s.Kind,
 			Resource: s.TerraformAddress,
-			TFID:     s.StateID, // Use StateID as tf_id
-			AWSID:    s.LiveID,  // Use LiveID as aws_id
+			TFID:     s.StateID,
+			AWSID:    s.LiveID,
 			Command:  s.Command,
-			Stdout:   s.Stdout, // Will be empty unless command execution captures it
-			Stderr:   s.Stderr, // Will be empty unless command execution captures it
+			Stdout:   s.Stdout, // Correctly populate
+			Stderr:   s.Stderr, // Correctly populate
 		}
 	}
 	return items
@@ -171,7 +221,8 @@ func renderResultsToJson(
 	originalStateFileHash string,
 	originalBackupLocalPath string,
 	newLocalStatePath string,
-	reportLocalPathMD string, // Renamed to clearly indicate it's the MD report path
+	reportLocalPathMD string,   // Renamed to clearly indicate it's the MD report path
+	reportLocalPathJSON string, // Added JSON report path
 ) (string, error) {
 
 	// Always calculate newStateFileHash if localStateFilePath is available.
@@ -187,9 +238,10 @@ func renderResultsToJson(
 
 	// Determine paths for JSON output
 	jsonBackupPaths := JSONBackupPaths{
-		OriginalPath: originalBackupLocalPath,
-		NewPath:      newLocalStatePath,
-		ReportPath:   reportLocalPathMD, // Use the MD report path here, as JSON output also contains report_path field
+		OriginalPath:   originalBackupLocalPath,
+		NewPath:        newLocalStatePath,
+		ReportPath:     reportLocalPathMD,
+		JsonReportPath: reportLocalPathJSON,
 	}
 
 	// Get checksums for backup files (these would have been created by handlePostReconciliationBackupsAndUpload)
@@ -211,6 +263,12 @@ func renderResultsToJson(
 			jsonBackupPaths.ReportChecksum = hash
 		}
 	}
+	if reportLocalPathJSON != "" { // Hash the JSON report itself
+		hash, err := calculateFileSHA256(reportLocalPathJSON)
+		if err == nil {
+			jsonBackupPaths.JsonReportChecksum = hash
+		}
+	}
 
 	// Correctly set the 'state' field based on whether it's an S3 state or local
 	stateIdentifier := config.StateFilePath
@@ -219,7 +277,7 @@ func renderResultsToJson(
 	}
 
 	jsonOutput := JSONOutput{
-		State:          stateIdentifier, // CORRECTED: Use stateIdentifier here
+		State:          stateIdentifier,
 		StateChecksum:  finalStateChecksum,
 		Region:         config.AWSRegion,
 		LocalStateFile: localStateFilePath,
@@ -228,6 +286,7 @@ func renderResultsToJson(
 		Concurrency:    config.Concurrency,
 		Backup:         jsonBackupPaths,
 		Commands:       results.RunCommands,
+		ExecutionLogs:  results.CommandExecutionLogs,
 		Results: JSONResults{
 			InfoResults:            convertResourceStatusToJSONItem(results.InfoResults),
 			OkResults:              convertResourceStatusToJSONItem(results.OkResults),
@@ -237,6 +296,7 @@ func renderResultsToJson(
 			ErrorResults:           convertResourceStatusToJSONItem(results.ErrorResults),
 			DangerousResults:       convertResourceStatusToJSONItem(results.DangerousResults),
 		},
+		ApplicationError: results.ApplicationError,
 	}
 
 	jsonData, err := json.MarshalIndent(jsonOutput, "", "\t")

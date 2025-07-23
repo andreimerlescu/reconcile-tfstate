@@ -15,137 +15,96 @@ const tfState string = "tf" + "state"
 // ErrNoState is returned by ReadState when the state file is empty.
 var ErrNoState = errors.New("no state")
 
+// globalConfig and globalAWSClients are used by the panic handler if main exits prematurely.
+// This is not ideal, but necessary for clean access to configuration and clients in a panic/recover scenario
+// without passing them around explicitly or using global state more broadly.
+var globalConfig Config
+var globalAWSClients *AWSClient
+var globalResults *categorizedResults // This will now have ApplicationError
+var globalLocalStateFilePath string
+var globalTfStateFile *TFStateFile
+var globalOriginalBaseFileName string
+var globalTimestamp string
+var globalStateFileModified bool
+var globalOriginalStateFileHash string
+
 // main is the entry point of the application.
 func main() {
+	// 1. Parse config first, as it's needed for error reporting and setup
 	config := parseAndValidateConfig()
+	globalConfig = config // Store globally for panic handler
 
 	if config.ShowVersion {
 		fmt.Println(Version())
 		os.Exit(0)
 	}
 
-	ctx := context.Background()
-
-	// 1. Initialize core components and ensure backup directory
-	awsClients, err := NewAWSClient(ctx, config.AWSRegion)
-	if err != nil {
-		log.Fatalf("Failed to initialize AWS clients: %v", err)
-	}
-	if err := os.MkdirAll(config.BackupsDir, 0755); err != nil {
-		log.Fatalf("Failed to create backups directory '%s': %v", config.BackupsDir, err)
-	}
-
-	// Capture timestamp and base file name early for consistent backups
-	timestamp := time.Now().Format("02-15-04-05") // DD-HH-MM-SS
-	yearMonth := time.Now().Format("2006/01")     // YYYY/MM for S3 backup path
-	var originalBaseFileName string
+	// Initialize these here as well for global access
+	globalResults = &categorizedResults{}              // Ensure this is initialized before potentially being used by panic handler
+	globalTimestamp = time.Now().Format("02-15-04-05") // DD-HH-MM-SS
 	if config.IsS3State {
-		_, originalBaseFileName = filepath.Split(config.S3Key)
+		_, globalOriginalBaseFileName = filepath.Split(config.S3Key)
 	} else {
-		originalBaseFileName = filepath.Base(config.StateFilePath)
+		globalOriginalBaseFileName = filepath.Base(config.StateFilePath)
 	}
 
-	// 2. Setup state file for processing and take initial backup
-	localStateFilePath, originalStateFileHash, err := setupStateFileForProcessing(
-		ctx, awsClients, config, originalBaseFileName, timestamp)
-	if err != nil {
-		log.Fatalf("Failed to setup state file: %v", err)
-	}
-	// Ensure temp local S3 file is cleaned up AFTER main exits
-	if config.IsS3State {
-		defer func() { _ = os.Remove(localStateFilePath) }()
-	}
+	// Set up the deferred function to handle panics and ensure S3 upload on failure
+	defer func() {
+		if r := recover(); r != nil {
+			err := fmt.Errorf("application crashed: %v", r)
+			log.Printf("FATAL ERROR: %v", err)
 
-	// Determine statePathForTerraformCLI from config AFTER localStateFilePath is set up
-	var statePathForTerraformCLI string
-	if config.IsS3State {
-		statePathForTerraformCLI = config.S3State // Terraform CLI can often use s3:// URI directly
-	} else {
-		statePathForTerraformCLI = config.StateFilePath // Terraform CLI uses local file
-	}
+			// Add the application error to the global results object
+			// This needs to be done *before* calling handlePostReconciliationBackupsAndUpload
+			// and assumes globalResults has been initialized.
+			if globalResults != nil {
+				globalResults.ApplicationError = err.Error()
+			} else {
+				// Fallback if globalResults wasn't initialized for some reason
+				globalResults = &categorizedResults{ApplicationError: err.Error()}
+			}
 
-	// 3. Perform the core reconciliation logic
-	tfStateFile := openAndReadStateFile(localStateFilePath)
+			// Try to upload whatever state/reports we have
+			if globalConfig.IsS3State {
+				originalBackupLocalPath := createBackupPath(globalConfig.BackupsDir, globalOriginalBaseFileName, "original", globalTimestamp, ".tfstate")
+				newLocalStatePathPlaceholder := createBackupPath(globalConfig.BackupsDir, globalOriginalBaseFileName, "new", globalTimestamp, ".tfstate")
+				reportLocalPathMD := createBackupPath(globalConfig.BackupsDir, globalOriginalBaseFileName, "report", globalTimestamp, ".txt")
+				reportLocalPathJSON := createBackupPath(globalConfig.BackupsDir, globalOriginalBaseFileName, "report", globalTimestamp, ".json")
 
-	// Only print header if not in JSON mode
-	if !config.JsonOutput {
-		printReportHeader(localStateFilePath, tfStateFile, config.AWSRegion, config.Concurrency) // Prints initial header to STDOUT
-	}
-
-	results := processResources(ctx, awsClients, tfStateFile, config.AWSRegion, config.Concurrency)
-	sortResults(results)
-
-	var stateFileModified bool
-	handleExecution(ctx, awsClients, &config, results, localStateFilePath, statePathForTerraformCLI, &stateFileModified)
-
-	// 4. Handle post-reconciliation backups and report generation
-	// These paths are needed for the JSON output as well, so derive them here.
-	originalBackupLocalPath := createBackupPath(config.BackupsDir, originalBaseFileName, "original", timestamp, filepath.Ext(originalBaseFileName))
-	newLocalStatePath := createBackupPath(config.BackupsDir, originalBaseFileName, "new", timestamp, filepath.Ext(originalBaseFileName))
-	reportLocalPath := createBackupPath(config.BackupsDir, originalBaseFileName, "report", timestamp, ".md")
-
-	err = handlePostReconciliationBackupsAndUpload(
-		ctx, awsClients, config, results, localStateFilePath, tfStateFile,
-		originalBaseFileName, timestamp, yearMonth, stateFileModified, originalStateFileHash)
-	if err != nil {
-		log.Fatalf("Failed to complete post-reconciliation steps: %v", err)
-	}
-
-	// NEW: Conditional output based on JsonOutput flag
-	if config.JsonOutput {
-		jsonOutput, err := renderResultsToJson(
-			results,
-			config,
-			tfStateFile,
-			localStateFilePath,
-			stateFileModified, // Keep this as it tells us if `commands` were executed
-			originalStateFileHash,
-			// Pass backup paths for JSON output
-			originalBackupLocalPath,
-			newLocalStatePath,
-			reportLocalPath,
-		)
-		if err != nil {
-			log.Fatalf("Failed to render JSON output: %v", err)
-		}
-		fmt.Println(jsonOutput)
-	} else {
-		// Existing detailed text output
-		printDetailedResultsToStdout(results)
-
-		// This part of the message is duplicated from `renderResultsToString` for the non-JSON path.
-		// It's fine to keep it here, or refactor `renderResultsToString` to only return the core report content.
-		// For now, mirroring the existing behavior.
-		if config.IsS3State {
-			if config.ExecuteCommands {
-				if stateFileModified {
-					fmt.Printf("\n--- S3 STATE FILE UPLOAD STATUS ---\nThe updated state file was automatically uploaded to S3 (and backed up) since '--should-execute' was enabled.\n")
-				} else {
-					fmt.Printf("\n--- S3 STATE FILE NOT UPLOADED ---\nNo 'terraform import' or 'terraform state rm' commands were executed that would modify the state file. No S3 re-upload of latest state was needed.\n")
+				// Create a dummy TFStateFile if it wasn't populated due to early error
+				if globalTfStateFile == nil {
+					globalTfStateFile = &TFStateFile{
+						Version:          0, // Indicate unknown version
+						TerraformVersion: "unknown",
+						Serial:           0,
+						Lineage:          "unknown",
+						RootOutputs:      make(map[string]OutputStateV4),
+						Resources:        []ResourceStateV4{},
+					}
 				}
-			} else {
-				fmt.Printf("\n--- S3 STATE FILE UPLOAD STATUS ---\nAfter you have executed the `terraform import` and `terraform state rm` commands above, your local state file '%s' will be modified. To upload the updated state file back to S3 (preserving history with versioning), run:\n   aws s3 cp %s s3://%s/%s --metadata-directive REPLACE --acl bucket-owner-full-control\nNOTE: The `--metadata-directive REPLACE` and `--acl bucket-owner-full-control` ensure existing metadata is replaced and proper ownership is maintained. Adjust ACL as per your bucket policy.\n", config.StateFilePath, config.StateFilePath, config.S3Bucket, config.S3Key)
-			}
-		} else {
-			// Messages for local-only state are now handled completely within handlePostReconciliationBackupsAndUpload
-			// based on the new logic. The final message here is redundant if handlePostReconciliationBackupsAndUpload
-			// prints everything.
-			// Re-evaluating this section: let's simplify.
-			// The explicit prints should either be here OR in the helper, not both producing conditional logic.
-			// Since JSON output doesn't get these, it's safer to have helper manage its own prints.
-			// So, for non-JSON, state.go will print relevant messages.
-			// This block itself could potentially be removed if state.go is comprehensive.
-			// However, for consistency with previous changes, keeping it here but noting the overlap.
-			if stateFileModified {
-				fmt.Printf("\nLocal state file '%s' was modified. Backups of original and new states are in '%s'.\n", config.StateFilePath, config.BackupsDir)
-				fmt.Printf("Original Hash: %s\n", originalStateFileHash)
-				// The new hash for text output is derived and printed inside handlePostReconciliationBackupsAndUpload now.
-			} else {
-				fmt.Println("\nNo changes to the state file detected. No new backups created.")
-			}
-		}
 
-		fmt.Println("\n--- End of Report ---")
-		fmt.Println("NOTE: This tool covers only a few resource types. Extend 'processResourceInstance' for full coverage.")
+				log.Println("Attempting to upload available backups and reports to S3 after crash...")
+				uploadErr := handlePostReconciliationBackupsAndUpload(
+					context.Background(), globalAWSClients, globalConfig, globalResults,
+					globalLocalStateFilePath, globalTfStateFile, globalOriginalBaseFileName, globalTimestamp,
+					globalStateFileModified, globalOriginalStateFileHash,
+					originalBackupLocalPath, newLocalStatePathPlaceholder, reportLocalPathMD, reportLocalPathJSON)
+				if uploadErr != nil {
+					log.Printf("ERROR: Failed to complete S3 upload during crash recovery: %v", uploadErr)
+				} else {
+					log.Println("Successfully uploaded available backups and reports to S3.")
+				}
+			} else { // Local only mode, just ensure reports are written
+				log.Println("Application crashed in local-only mode. Reports should be available locally.")
+			}
+			os.Exit(1) // Exit with an error code after recovery/cleanup
+		}
+	}()
+
+	// Run the main application logic in a separate function
+	if appErr := runApplication(config); appErr != nil {
+		// If runApplication returns an error, log it and then panic to trigger the defer
+		// The panic value will be the error itself
+		panic(appErr)
 	}
 }

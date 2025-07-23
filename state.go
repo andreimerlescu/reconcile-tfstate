@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time" // Added for time.Now().Format for S3 paths
 )
 
 // setupStateFileForProcessing handles downloading/copying the state file and initial local backup/hashing.
@@ -65,9 +66,12 @@ func handlePostReconciliationBackupsAndUpload(
 	tfStateFile *TFStateFile,
 	originalBaseFileName string,
 	timestamp string,
-	yearMonth string,
 	stateFileModified bool, // This is true if `executeCommands` ran and potentially modified.
 	originalStateFileHash string,
+	originalBackupLocalPath string, // Pass actual path from main
+	newLocalStatePath string,       // Pass actual path from main
+	reportLocalPathMD string,       // Pass actual path from main
+	reportLocalPathJSON string,     // Pass actual path from main
 ) error {
 	// Calculate newStateFileHash first, as it's needed for both text and JSON outputs
 	var newStateFileHash string
@@ -85,7 +89,6 @@ func handlePostReconciliationBackupsAndUpload(
 
 	// --- Save Markdown Report (Always) ---
 	reportContentMD := renderResultsToString(results, config, tfStateFile, stateFileModified, contentChanged, originalStateFileHash, newStateFileHash)
-	reportLocalPathMD := createBackupPath(config.BackupsDir, originalBaseFileName, "report", timestamp, ".md")
 	if !config.JsonOutput { // Only print report writing message for MD in non-JSON mode
 		fmt.Printf("Writing Markdown report to %s...\n", reportLocalPathMD)
 	}
@@ -103,16 +106,12 @@ func handlePostReconciliationBackupsAndUpload(
 	}
 
 	// --- Always create the 'new' state backup locally ---
-	// This ensures `newLocalStatePath` is always valid for hashing in `renderResultsToJson`
-	newLocalStatePath := createBackupPath(config.BackupsDir, originalBaseFileName, "new", timestamp, ".tfstate") // Use .tfstate extension explicitly
-	if _, err := os.Stat(localStateFilePath); err == nil {                                                       // Double check source exists
+	if _, err := os.Stat(localStateFilePath); err == nil { // Double check source exists
 		if !config.JsonOutput {
 			fmt.Printf("Copying final state to new backup path: %s...\n", newLocalStatePath)
 		}
 		if err := copyFile(localStateFilePath, newLocalStatePath); err != nil {
 			log.Printf("WARNING: Failed to copy final state to new backup path: %v", err)
-			// Clear path if copy failed, so we don't try to hash a non-existent file later
-			newLocalStatePath = ""
 		} else {
 			// Write the hash for the 'new' local backup
 			if newStateFileHash != "" { // Only write if we successfully calculated a hash
@@ -123,7 +122,6 @@ func handlePostReconciliationBackupsAndUpload(
 		}
 	} else {
 		log.Printf("WARNING: Skipping creation of 'new' backup as local state file source '%s' was not found: %v", localStateFilePath, err)
-		newLocalStatePath = "" // Ensure it's empty if source is missing
 	}
 
 	// --- Save JSON Report (Always) ---
@@ -134,14 +132,14 @@ func handlePostReconciliationBackupsAndUpload(
 		localStateFilePath,
 		stateFileModified,
 		originalStateFileHash,
-		createBackupPath(config.BackupsDir, originalBaseFileName, "original", timestamp, ".tfstate"), // Original backup path
-		newLocalStatePath,                                                                            // Pass the *actual* path where new.tfstate was/will be saved (could be empty if copy failed)
-		reportLocalPathMD,                                                                            // Pass the MD report path for reference in JSON output
+		originalBackupLocalPath,
+		newLocalStatePath,
+		reportLocalPathMD,
+		reportLocalPathJSON, // Pass the path for the JSON report itself
 	)
 	if err != nil {
 		log.Printf("ERROR: Failed to render JSON report for backup: %v", err)
 	} else {
-		reportLocalPathJSON := createBackupPath(config.BackupsDir, originalBaseFileName, "report", timestamp, ".json")
 		if !config.JsonOutput { // Only print report writing message for JSON in non-JSON mode
 			fmt.Printf("Writing JSON report to %s...\n", reportLocalPathJSON)
 		}
@@ -160,33 +158,36 @@ func handlePostReconciliationBackupsAndUpload(
 	}
 
 	// S3-specific post-processing for backups and final upload
-	if config.IsS3State && contentChanged { // Only upload if it's S3 state and content actually changed
+	if config.IsS3State && (contentChanged || stateFileModified || (results.ApplicationError != "")) { // Upload if modified, commands run, or app crashed
 		if !config.JsonOutput { // Only print upload status in non-JSON mode
 			fmt.Println("\n--- PERFORMING S3 BACKUP AND FINAL UPLOAD ---")
 		}
-
+		// yearMonth must be derived consistently with createBackupPath
+		yearMonth := time.Now().Format("2006/01")
 		s3BackupPrefix := fmt.Sprintf("state-backups/%s/%s/", yearMonth, timestamp)
 
 		// Upload original.tfstate + hash to S3 backup path
-		originalS3BackupKey := s3BackupPrefix + "original." + originalBaseFileName
+		originalS3BackupKey := s3BackupPrefix + "original." + originalBaseFileName + ".tfstate"
 		originalS3HashKey := originalS3BackupKey + ".sha256"
-		originalBackupLocalPathForS3 := createBackupPath(config.BackupsDir, originalBaseFileName, "original", timestamp, ".tfstate") // Re-derive
-		if !config.JsonOutput {
-			fmt.Printf("Uploading original local backup to s3://%s/%s...\n", config.S3Bucket, originalS3BackupKey)
-		}
-		if err := uploadFileToS3(ctx, awsClients, originalBackupLocalPathForS3, config.S3Bucket, originalS3BackupKey); err != nil {
-			log.Printf("ERROR: Failed to upload original local backup to S3: %v", err)
-		}
-		if originalStateFileHash != "" {
-			if err := uploadStringContentToS3(ctx, awsClients, originalStateFileHash, config.S3Bucket, originalS3HashKey); err != nil {
-				log.Printf("ERROR: Failed to upload original hash to S3: %v", err)
+		if _, err := os.Stat(originalBackupLocalPath); err == nil { // Check if file exists locally
+			if !config.JsonOutput {
+				fmt.Printf("Uploading original local backup to s3://%s/%s...\n", config.S3Bucket, originalS3BackupKey)
 			}
+			if err := uploadFileToS3(ctx, awsClients, originalBackupLocalPath, config.S3Bucket, originalS3BackupKey); err != nil {
+				log.Printf("ERROR: Failed to upload original local backup to S3: %v", err)
+			}
+			if originalStateFileHash != "" {
+				if err := uploadStringContentToS3(ctx, awsClients, originalStateFileHash, config.S3Bucket, originalS3HashKey); err != nil {
+					log.Printf("ERROR: Failed to upload original hash to S3: %v", err)
+				}
+			}
+		} else {
+			log.Printf("WARNING: Skipping S3 upload of 'original' state backup as local file '%s' was not found: %v\n", originalBackupLocalPath, err)
 		}
 
 		// Upload new.tfstate + hash to S3 backup path
-		// Ensure newLocalStatePath is correctly derived and exists from the unconditional copy above
-		if newLocalStatePath != "" { // Only attempt S3 upload if local new.tfstate was successfully created
-			newS3BackupKey := s3BackupPrefix + "new." + originalBaseFileName
+		if _, err := os.Stat(newLocalStatePath); err == nil { // Only attempt S3 upload if local new.tfstate was successfully created
+			newS3BackupKey := s3BackupPrefix + "new." + originalBaseFileName + ".tfstate"
 			newS3HashKey := newS3BackupKey + ".sha256"
 			if !config.JsonOutput {
 				fmt.Printf("Uploading modified local state to s3://%s/%s...\n", config.S3Bucket, newS3BackupKey)
@@ -200,29 +201,32 @@ func handlePostReconciliationBackupsAndUpload(
 				}
 			}
 		} else {
-			log.Printf("WARNING: Skipping S3 upload of 'new' state as local 'new' backup file was not found (path was empty).\n")
+			log.Printf("WARNING: Skipping S3 upload of 'new' state as local 'new' backup file '%s' was not found: %v\n", newLocalStatePath, err)
 		}
 
 		// Upload MD report to S3
-		reportS3KeyMD := s3BackupPrefix + "report." + originalBaseFileName + ".md"
+		reportS3KeyMD := s3BackupPrefix + "report." + originalBaseFileName + ".txt"
 		reportHashS3KeyMD := reportS3KeyMD + ".sha256"
-		if !config.JsonOutput {
-			fmt.Printf("Uploading Markdown report to s3://%s/%s...\n", config.S3Bucket, reportS3KeyMD)
-		}
-		if err := uploadFileToS3(ctx, awsClients, reportLocalPathMD, config.S3Bucket, reportS3KeyMD); err != nil {
-			log.Printf("ERROR: Failed to upload Markdown report to S3: %v", err)
-		}
-		if hash, hashErr := calculateFileSHA256(reportLocalPathMD); hashErr == nil {
-			if err := uploadStringContentToS3(ctx, awsClients, hash, config.S3Bucket, reportHashS3KeyMD); err != nil {
-				log.Printf("ERROR: Failed to upload Markdown report hash to S3: %v", err)
+		if _, err := os.Stat(reportLocalPathMD); err == nil { // Check if file exists locally
+			if !config.JsonOutput {
+				fmt.Printf("Uploading Markdown report to s3://%s/%s...\n", config.S3Bucket, reportS3KeyMD)
 			}
+			if err := uploadFileToS3(ctx, awsClients, reportLocalPathMD, config.S3Bucket, reportS3KeyMD); err != nil {
+				log.Printf("ERROR: Failed to upload Markdown report to S3: %v", err)
+			}
+			if hash, hashErr := calculateFileSHA256(reportLocalPathMD); hashErr == nil {
+				if err := uploadStringContentToS3(ctx, awsClients, hash, config.S3Bucket, reportHashS3KeyMD); err != nil {
+					log.Printf("ERROR: Failed to upload Markdown report hash to S3: %v", err)
+				}
+			}
+		} else {
+			log.Printf("WARNING: Skipping S3 upload of Markdown report as local file '%s' was not found: %v\n", reportLocalPathMD, err)
 		}
 
 		// Upload JSON report to S3
 		reportS3KeyJSON := s3BackupPrefix + "report." + originalBaseFileName + ".json"
 		reportHashS3KeyJSON := reportS3KeyJSON + ".sha256"
-		reportLocalPathJSON := createBackupPath(config.BackupsDir, originalBaseFileName, "report", timestamp, ".json") // Re-derive
-		if _, err := os.Stat(reportLocalPathJSON); err == nil {                                                        // Check if file exists locally
+		if _, err := os.Stat(reportLocalPathJSON); err == nil { // Check if file exists locally
 			if !config.JsonOutput {
 				fmt.Printf("Uploading JSON report to s3://%s/%s...\n", config.S3Bucket, reportS3KeyJSON)
 			}
@@ -235,20 +239,23 @@ func handlePostReconciliationBackupsAndUpload(
 				}
 			}
 		} else {
-			log.Printf("WARNING: Skipping S3 upload of JSON report as local JSON report file was not found (path was empty).\n")
+			log.Printf("WARNING: Skipping S3 upload of JSON report as local file '%s' was not found: %v\n", reportLocalPathJSON, err)
 		}
 
 		// Finally, upload the modified local state back to the original S3 location
 		if !config.JsonOutput {
 			fmt.Printf("Uploading FINAL modified state to original s3://%s/%s...\n", config.S3Bucket, config.S3Key)
 		}
-		return uploadStateFileToS3(ctx, awsClients, localStateFilePath, config.S3Bucket, config.S3Key) // Returns final error
-	} else if !config.IsS3State && contentChanged && !config.JsonOutput { // Local file changed, but not S3 state, AND not JSON output
-		// This block implies contentChanged is true (hashes are different)
+		uploadErr := uploadStateFileToS3(ctx, awsClients, localStateFilePath, config.S3Bucket, config.S3Key)
+		if uploadErr != nil {
+			log.Printf("ERROR: Final upload of state file to original S3 location failed: %v", uploadErr)
+		}
+		return uploadErr // Return the error from the final upload
+	} else if !config.IsS3State && (contentChanged || stateFileModified || (results.ApplicationError != "")) && !config.JsonOutput { // Local file changed, but not S3 state, AND not JSON output
 		fmt.Printf("\nLocal state file '%s' was modified. A backup of the 'original' state and the 'new' state are in '%s'.\n", localStateFilePath, config.BackupsDir)
 		fmt.Printf("Original Hash: %s\n", originalStateFileHash)
 		fmt.Printf("New Hash:      %s\n", newStateFileHash)
-	} else if !contentChanged && !config.JsonOutput { // No content change and not JSON output
+	} else if !contentChanged && !stateFileModified && (results.ApplicationError == "") && !config.JsonOutput { // No content change and not JSON output
 		fmt.Println("\nNo changes to the state file detected. No new backups created.")
 	}
 	return nil

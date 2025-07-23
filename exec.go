@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -12,53 +14,70 @@ import (
 // handleExecution encapsulates the logic for executing commands and uploading the state file.
 func handleExecution(ctx context.Context, awsClients *AWSClient, config *Config, results *categorizedResults, localStateFilePath, statePathForTerraformCLI string, stateFileModified *bool) {
 	if config.ExecuteCommands {
-		// Removed localStateFilePath from the call since it's not used in executeCommands
-		stateWasModifiedByCommands, err := executeCommands(results.RunCommands, statePathForTerraformCLI)
+		// Pass relevant config fields instead of the whole config object to executeCommands
+		stateWasModifiedByCommands, commandExecutionLogs, err := executeCommands(
+			results.RunCommands,
+			statePathForTerraformCLI,
+			config.TerraformWorkingDir,
+			config.JsonOutput, // Pass JsonOutput here
+		)
+
+		// Store command execution logs regardless of success or failure of commands
+		results.CommandExecutionLogs = commandExecutionLogs
+
 		if err != nil {
-			log.Fatalf("Failed to execute remediation commands: %v", err)
+			log.Printf("ERROR: One or more remediation commands failed: %v", err)
+			*stateFileModified = stateWasModifiedByCommands
+			return // Exit this function but allow main to continue
 		}
 
 		// Update the shared stateFileModified flag
-		if stateWasModifiedByCommands {
-			*stateFileModified = true
-		}
+		*stateFileModified = stateWasModifiedByCommands
 
-		// After executing commands, the local state file *might* have been modified
-		// by `terraform import` or `terraform state rm` if they operated on the local file.
-		// If using S3 backend, the terraform commands might directly update S3.
-		// For safety and consistency, if we started with an S3 state, we re-upload
-		// the local copy *after* commands run if they modified the local file.
-		// IMPORTANT: If `terraform import/state rm` directly write to S3, this re-upload might be redundant.
-		// However, it ensures our local copy (from download) is the authoritative source for re-upload.
 		if config.IsS3State {
-			if *stateFileModified { // Only upload if it was actually modified
-				fmt.Println("\n--- UPLOADING UPDATED STATE FILE TO S3 ---")
-				// This upload should only push the *content*. It should not mess with ACLs/metadata.
+			if *stateFileModified {
+				if !config.JsonOutput {
+					fmt.Println("\n--- UPLOADING UPDATED STATE FILE TO S3 ---")
+				}
 				err := uploadStateFileToS3(ctx, awsClients, localStateFilePath, config.S3Bucket, config.S3Key)
 				if err != nil {
-					log.Fatalf("Failed to upload updated state file to S3: %v", err)
+					log.Printf("ERROR: Failed to upload updated state file to S3: %v", err)
+					return // Exit this function but allow main to continue
 				}
-				fmt.Println("Upload of updated state file complete.")
+				if !config.JsonOutput {
+					fmt.Println("Upload of updated state file complete.")
+				}
 			} else {
-				fmt.Println("\n--- S3 STATE FILE NOT UPLOADED ---")
-				fmt.Println("No 'terraform import' or 'terraform state rm' commands were executed that would modify the state file.")
+				if !config.JsonOutput {
+					fmt.Println("\n--- S3 STATE FILE NOT UPLOADED ---")
+					fmt.Println("No 'terraform import' or 'terraform state rm' commands were executed that would modify the state file.")
+				}
 			}
 		}
 	}
+	return
 }
 
 // executeCommands iterates through the provided commands and executes them.
-// It returns an error if any command fails.
-// Removed localStateFilePath from parameters as it's unused.
-func executeCommands(commands []string, statePathForTerraformCLI string) (bool, error) {
+// It returns a boolean indicating if any state-altering command was targeted,
+// a slice of CommandExecutionLog detailing each command's outcome,
+// and an error if any command failed.
+func executeCommands(commands []string, statePathForTerraformCLI, terraformWorkingDir string, jsonOutput bool) (bool, []CommandExecutionLog, error) { // Added jsonOutput
 	if len(commands) == 0 {
-		fmt.Println("\nNo remediation commands to execute.")
-		return false, nil // No commands, so no modification
+		if !jsonOutput { // Use passed jsonOutput
+			fmt.Println("\nNo remediation commands to execute.")
+		}
+		return false, []CommandExecutionLog{}, nil
 	}
 
 	stateAlteringCommandExecuted := false
+	var allCommandLogs []CommandExecutionLog
+	var firstError error
 
-	fmt.Println("\n--- EXECUTING REMEDIATION COMMANDS ---")
+	if !jsonOutput { // Use passed jsonOutput
+		fmt.Println("\n--- EXECUTING REMEDIATION COMMANDS ---")
+	}
+
 	for _, cmdStr := range commands {
 		cmdStr = strings.TrimSpace(cmdStr)
 		parts := strings.Fields(cmdStr)
@@ -72,54 +91,118 @@ func executeCommands(commands []string, statePathForTerraformCLI string) (bool, 
 			cmdArgs = parts[1:]
 		}
 
-		// Dynamically add the -state flag, preferring the S3 URI if applicable.
-		// Terraform CLI (0.13+ for state subcommands, earlier for import) can handle s3:// URIs.
 		var finalArgs []string
-		if cmdName == "terraform" && len(cmdArgs) > 0 && (cmdArgs[0] == "import" || cmdArgs[0] == "state") {
-			// Check if -state flag is already present in the command string itself.
-			// This covers cases where Terraform might generate commands with -state already.
-			foundStateFlag := false
-			for _, arg := range cmdArgs {
-				if strings.HasPrefix(arg, "-state=") {
-					foundStateFlag = true
-					break
-				}
-			}
+		// isTerraformStateCommand := false // REMOVED: Declared and not used
 
-			if !foundStateFlag {
-				finalArgs = append(finalArgs, cmdArgs[0]) // e.g., "import" or "state"
-				if cmdArgs[0] == "state" && len(cmdArgs) > 1 {
-					// Handle subcommands like "state rm", "state push"
-					finalArgs = append(finalArgs, cmdArgs[1])     // e.g., "rm", "push"
-					finalArgs = append(finalArgs, cmdArgs[2:]...) // remaining arguments like address
-				} else {
-					// For "import", or "state <something_else_than_rm/push>"
-					finalArgs = append(finalArgs, cmdArgs[1:]...) // remaining arguments
+		if cmdName == "terraform" && len(cmdArgs) > 0 {
+			subcommand := cmdArgs[0]
+			if subcommand == "import" {
+				// isTerraformStateCommand = true // REMOVED
+				stateAlteringCommandExecuted = true // Mark as state-altering
+				if len(cmdArgs) < 3 {
+					cmdLog := CommandExecutionLog{
+						Command:  cmdStr,
+						Error:    "malformed terraform import command: expects ADDR and ID",
+						ExitCode: 1,
+					}
+					allCommandLogs = append(allCommandLogs, cmdLog)
+					if firstError == nil {
+						firstError = fmt.Errorf(cmdLog.Error)
+					}
+					continue // Skip execution of this malformed command
 				}
-				// Append the state flag with the S3 URI (or local path if not S3)
-				finalArgs = append(finalArgs, fmt.Sprintf("-state=%s", statePathForTerraformCLI))
+				addr := cmdArgs[1]
+				id := cmdArgs[2]
+
+				foundStateFlag := false
+				for _, arg := range cmdArgs {
+					if strings.HasPrefix(arg, "-state=") {
+						foundStateFlag = true
+						break
+					}
+				}
+
+				finalArgs = append(finalArgs, subcommand) // "import"
+				if !foundStateFlag {
+					finalArgs = append(finalArgs, fmt.Sprintf("-state=%s", statePathForTerraformCLI))
+				}
+				finalArgs = append(finalArgs, addr, id)
+				finalArgs = append(finalArgs, cmdArgs[3:]...) // Append any other args that might exist after ADDR ID
+
+			} else if subcommand == "state" {
+				// isTerraformStateCommand = true // REMOVED
+				stateAlteringCommandExecuted = true // Mark as state-altering
+				if len(cmdArgs) < 2 {               // Expect at least "state", subcommand (e.g., "rm")
+					cmdLog := CommandExecutionLog{
+						Command:  cmdStr,
+						Error:    "malformed terraform state command: missing subcommand",
+						ExitCode: 1,
+					}
+					allCommandLogs = append(allCommandLogs, cmdLog)
+					if firstError == nil {
+						firstError = fmt.Errorf(cmdLog.Error)
+					}
+					continue // Skip execution
+				}
+
+				foundStateFlag := false
+				for _, arg := range cmdArgs {
+					if strings.HasPrefix(arg, "-state=") {
+						foundStateFlag = true
+						break
+					}
+				}
+
+				finalArgs = append(finalArgs, subcommand) // "state"
+				finalArgs = append(finalArgs, cmdArgs[1]) // e.g., "rm"
+				if !foundStateFlag {
+					finalArgs = append(finalArgs, fmt.Sprintf("-state=%s", statePathForTerraformCLI))
+				}
+				finalArgs = append(finalArgs, cmdArgs[2:]...) // remaining arguments like ADDR
+
 			} else {
-				// If -state is already in the generated command, use the args as is.
-				// This shouldn't happen if our tool generates them cleanly, but for robustness.
 				finalArgs = cmdArgs
 			}
-			stateAlteringCommandExecuted = true // Mark that a state-altering command was targeted for execution
 		} else {
-			finalArgs = cmdArgs // For non-terraform commands (e.g., aws s3 cp), use as is.
+			finalArgs = cmdArgs
 		}
 
-		fmt.Printf("Executing: %s %s\n", cmdName, strings.Join(finalArgs, " "))
+		if !jsonOutput { // Use passed jsonOutput
+			fmt.Printf("Executing: %s %s\n", cmdName, strings.Join(finalArgs, " "))
+		}
 
 		cmd := exec.Command(cmdName, finalArgs...)
-		cmd.Env = os.Environ() // Inherit current environment variables for AWS creds/region
+		cmd.Env = os.Environ()
+		cmd.Dir = terraformWorkingDir // Set the working directory for the command
 
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
+		var stdoutBuf, stderrBuf bytes.Buffer
+		cmd.Stdout = &stdoutBuf
+		cmd.Stderr = &stderrBuf
 
-		if err := cmd.Run(); err != nil {
-			return false, fmt.Errorf("command failed: %s %s - %w", cmdName, strings.Join(finalArgs, " "), err)
+		cmdLog := CommandExecutionLog{
+			Command:  strings.Join(append([]string{cmdName}, finalArgs...), " "),
+			ExitCode: 0, // Default to 0, updated on error
 		}
+
+		err := cmd.Run()
+		cmdLog.Stdout = stdoutBuf.String()
+		cmdLog.Stderr = stderrBuf.String()
+
+		if err != nil {
+			var exitError *exec.ExitError
+			if errors.As(err, &exitError) {
+				cmdLog.ExitCode = exitError.ExitCode()
+			}
+			cmdLog.Error = err.Error()
+			if firstError == nil {
+				firstError = fmt.Errorf("command '%s' failed: %w", cmdLog.Command, err)
+			}
+		}
+		allCommandLogs = append(allCommandLogs, cmdLog)
 	}
-	fmt.Println("--- REMEDIATION COMMANDS EXECUTION COMPLETE ---")
-	return stateAlteringCommandExecuted, nil
+
+	if !jsonOutput { // Use passed jsonOutput
+		fmt.Println("--- REMEDIATION COMMANDS EXECUTION COMPLETE ---")
+	}
+	return stateAlteringCommandExecuted, allCommandLogs, firstError
 }

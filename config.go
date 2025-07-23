@@ -18,6 +18,7 @@ func parseAndValidateConfig() Config {
 	shouldExecute := flag.Bool("should-execute", false, "If true, automatically execute the suggested 'terraform import' and 'terraform state rm' commands.") // New flag
 	backupsDir := flag.String("backups-dir", filepath.Join(".", "backups"), "Directory to store local backups and reports.")
 	jsonOutput := flag.Bool("json", false, "If true, render results in JSON format to stdout.") // NEW: JSON flag
+	terraformWorkingDir := flag.String("tf-dir", ".", "Optional: The directory where 'terraform' commands should be executed. Defaults to the current directory.")
 
 	flag.Parse()
 
@@ -36,13 +37,14 @@ func parseAndValidateConfig() Config {
 	}
 
 	config := Config{
-		StateFilePath:   *stateFilePath,
-		AWSRegion:       *awsRegion,
-		Concurrency:     *concurrency,
-		S3State:         *s3State,
-		ExecuteCommands: *shouldExecute,
-		BackupsDir:      *backupsDir,
-		JsonOutput:      *jsonOutput,
+		StateFilePath:       *stateFilePath,
+		AWSRegion:           *awsRegion,
+		Concurrency:         *concurrency,
+		S3State:             *s3State,
+		ExecuteCommands:     *shouldExecute,
+		BackupsDir:          *backupsDir,
+		JsonOutput:          *jsonOutput,
+		TerraformWorkingDir: *terraformWorkingDir,
 	}
 
 	if *s3State != "" {

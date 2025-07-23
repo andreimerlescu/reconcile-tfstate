@@ -19,24 +19,17 @@ import (
 
 // createBackupPath generates a timestamped path for backup files.
 // baseDir: the configured backups directory
-// originalFileName: the base name of the state file (e.g., "dev.tfstate")
+// originalFileName: the base name of the state file (e.g., "dev.tfstate" or "mykey")
 // prefix: "original", "new", "report"
 // timestamp: formatted timestamp string (e.g., "02-15-04")
-// finalExtension: the desired final extension for the file, e.g., ".tfstate", ".json", ".md", ".sha256"
+// finalExtension: the desired final extension for the file, e.g., ".tfstate", ".json", ".txt", ".sha256"
 func createBackupPath(baseDir, originalFileName, prefix, timestamp, finalExtension string) string {
-	// Extract just the base name from originalFileName, stripping only .tfstate if present.
-	// This ensures we get "dev" from "dev.tfstate", or "myfile" from "myfile.txt".
-	base := filepath.Base(originalFileName)
-	nameWithoutTfstateExt := strings.TrimSuffix(strings.ToLower(base), ".tfstate")                  // Always strip .tfstate first
-	cleanBaseName := strings.TrimSuffix(nameWithoutTfstateExt, filepath.Ext(nameWithoutTfstateExt)) // Strip any other extension after .tfstate is handled (e.g., if original was "file.txt.tfstate")
+	// Ensure base name does not include existing extensions to avoid "file.tfstate.tfstate"
+	cleanBaseName := strings.TrimSuffix(originalFileName, ".tfstate")
+	cleanBaseName = strings.TrimSuffix(cleanBaseName, filepath.Ext(cleanBaseName)) // remove any other extension before .tfstate
 
-	// Special handling for originalFileName if it was like "tfstate-download-123.tfstate"
-	// We want to extract "tfstate-download-123" as the base name.
-	// If the cleanBaseName is empty (e.g., if originalFileName was just ".tfstate"), default to "state".
-	if cleanBaseName == "" && strings.HasSuffix(strings.ToLower(base), ".tfstate") {
-		cleanBaseName = strings.TrimSuffix(base, ".tfstate")
-	} else if cleanBaseName == "" { // e.g. for `tfstate-download-123`
-		cleanBaseName = base
+	if cleanBaseName == "" { // Fallback if originalFileName was just an extension or empty
+		cleanBaseName = "state"
 	}
 
 	// Format: <baseDir>/YYYY/MM/<timestamp>/<prefix>.<cleanBaseName><finalExtension>
@@ -46,7 +39,6 @@ func createBackupPath(baseDir, originalFileName, prefix, timestamp, finalExtensi
 	dir := filepath.Join(baseDir, yearMonth, timestamp)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		// Log the warning, but don't stop execution. Fallback to baseDir if creation fails.
-		// This makes it more robust if only read access to subdirs is allowed for some reason.
 		log.Printf("WARNING: Failed to create backup subdirectory '%s': %v. Storing in base directory.", dir, err)
 		dir = baseDir
 	}
